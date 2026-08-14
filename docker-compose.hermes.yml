@@ -48,11 +48,33 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Matches hermes@Hermes -- verified with `id -u && id -g` on 14 Aug 2026.
-      # Wrong values here surface as SQLite "out of memory (14)" /
-      # SQLITE_CANTOPEN, which is a permissions error wearing a bad disguise.
-      - PUID=1000
-      - PGID=1000
+      # MUST be 10001 on the CUDA image, NOT 1000. This is an upstream bug and
+      # 1000 is the one value guaranteed to break it.
+      #
+      # Dockerfile.cuda builds appuser at uid/gid 10001 ("to avoid conflicts
+      # with existing users in CUDA base image" -- Ubuntu 24.04 already has a
+      # user at 1000). The plain CPU Dockerfile builds appuser at 1000. Both
+      # images share ONE docker-entrypoint.sh, which hard-codes 1000 as the
+      # default and skips the usermod when PUID=1000:
+      #
+      #   if [ "$target_uid" != "1000" ] || [ "$target_gid" != "1000" ]; then
+      #       ...usermod appuser to target uid...
+      #   else
+      #       echo "Using default user (UID=1000, GID=1000)"   # no-op
+      #   fi
+      #   chown -R "$PUID:$PGID" /app/data /app/whisperx-env    # -> 1000:1000
+      #   exec gosu appuser "$@"                                # -> runs as 10001
+      #
+      # Net effect with PUID=1000: dirs owned by 1000, process runs as 10001,
+      # and SQLite cannot open its own database. It reports SQLITE_CANTOPEN,
+      # which the Go driver surfaces as the misleading "out of memory (14)".
+      # The README's "match your host UID" advice is right for the CPU image
+      # and wrong for this one.
+      #
+      # Consequence to remember for Phase 4: files written into any bind-mounted
+      # host path will be owned 10001:10001, not by hermes@Hermes (1000).
+      - PUID=10001
+      - PGID=10001
       # Upstream marks this DO NOT CHANGE. Leave it.
       - APP_ENV=production
       # Required because we reach this over plain HTTP on localhost, not HTTPS.
