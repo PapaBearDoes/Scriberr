@@ -1,0 +1,66 @@
+# Scriberr on Hermes -- RTX 3080 (Ampere, sm_86), Debian trixie under WSL2.
+#
+# This file is OURS. Upstream's docker-compose.cuda.yml is deliberately left
+# untouched so `git fetch upstream && git merge` never conflicts over config
+# that was only ever meant for one machine.
+#
+# Do NOT use upstream's docker-compose.cuda.yml as-is. As of Aug 2026 it is
+# stale in two ways at once: it pins image `scriberr:v1.0.4-cuda` when the
+# project is on v1.2.x, and that is also the wrong image REPOSITORY -- the
+# README's canonical CUDA config uses `scriberr-cuda`. Upstream development is
+# currently paused, so do not expect that file to be fixed.
+#
+# Image choice: `scriberr-cuda` is correct for GTX 10-series through RTX
+# 40-series (sm_61 to sm_89). RTX 50-series Blackwell (sm_120) needs the
+# separate `scriberr-cuda-blackwell` image instead -- relevant if this ever
+# moves to Bacchus, which has an RTX 5060.
+#
+# Run with:
+#   docker compose -f docker-compose.hermes.yml up -d
+#   docker compose -f docker-compose.hermes.yml logs -f
+#
+# Ready signal:  msg="Scriberr is ready" url=http://0.0.0.0:8080
+
+services:
+  scriberr:
+    image: ghcr.io/rishikanthc/scriberr-cuda:v1.2.0
+    container_name: scriberr
+    ports:
+      - "8080:8080"
+    volumes:
+      # Named volumes, deliberately. Bind-mounting a Windows path (C:\, Y:\)
+      # into this container breaks it: docker-entrypoint.sh runs as root,
+      # chowns the data dirs to PUID/PGID, then drops privileges with gosu,
+      # and that chown is meaningless on a Windows-hosted filesystem with no
+      # real Linux ownership. It is also slow through the translation layer.
+      # These live in /var/lib/docker/volumes inside the WSL2 VM.
+      - scriberr_data:/app/data
+      - env_data:/app/whisperx-env
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Matches hermes@Hermes -- verified with `id -u && id -g` on 14 Aug 2026.
+      # Wrong values here surface as SQLite "out of memory (14)" /
+      # SQLITE_CANTOPEN, which is a permissions error wearing a bad disguise.
+      - PUID=1000
+      - PGID=1000
+      # Upstream marks this DO NOT CHANGE. Leave it.
+      - APP_ENV=production
+      # Required because we reach this over plain HTTP on localhost, not HTTPS.
+      # With APP_ENV=production the app defaults SECURE_COOKIES=true and then
+      # refuses to send cookies over http, which presents as the app loading
+      # fine but every waveform failing with "Unable to load audio stream".
+      - SECURE_COOKIES=false
+
+volumes:
+  scriberr_data: {}
+  env_data: {}
