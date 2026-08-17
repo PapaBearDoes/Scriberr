@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the Scriberr standing feed hourly
+
+[Timer]
+OnCalendar=hourly
+
+# Hermes is a desktop that is off for long stretches. Persistent=true fires one
+# catch-up run shortly after boot when the last scheduled run was missed, which
+# is what makes an hourly schedule work on a box with no uptime guarantee.
+Persistent=true
+
+# Do not hit the publisher's CDN at exactly :00 every hour, and do not collide
+# with whatever else fires on the hour.
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
