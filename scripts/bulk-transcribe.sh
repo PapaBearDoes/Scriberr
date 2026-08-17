@@ -66,7 +66,35 @@ for f in "$AUDIO_DIR"/*.mp3; do
   base=$(basename "$f")
 
   # Resume: ledger holds one tab-separated line per finished episode.
-  if cut -f1 "$LEDGER" | grep -qxF "$base"; then
+  #
+  # DO NOT "SIMPLIFY" THIS BACK INTO A PIPELINE. It was
+  #   if cut -f1 "$LEDGER" | grep -qxF "$base"; then
+  # and that is a race that silently inverts its own result on a MATCH.
+  #
+  # `grep -q` exits the instant it matches. If `cut` still has output pending,
+  # it dies of SIGPIPE (141), and `set -o pipefail` (line 33) promotes 141 to
+  # the pipeline's status, so the `if` reads a successful match as false and
+  # the episode is re-transcribed. Finding the entry is what breaks it.
+  #
+  # WHY THE 634-EPISODE BACKFILL RAN CLEAN AND THIS STILL BIT US, 17 Aug 2026:
+  # two conditions must hold together. Column 1 must exceed the 64 KiB pipe
+  # buffer, or `cut` finishes writing before `grep` reads a byte and SIGPIPE is
+  # impossible; at ~116 bytes per line that happens around line 566. AND the
+  # lookup must HIT, because a miss makes `grep` read to EOF and `cut` exit
+  # normally. Every backfill lookup was a miss, so the bug could not express
+  # itself until the standing feed ran against a full ledger.
+  #
+  # MEASURED on Hermes with a 642-line ledger: column 1 was 74,357 bytes
+  # against a 65,536-byte buffer, and 200 trials of the old pipeline against a
+  # known-present name returned 9 false negatives (4.5%). Seven episodes were
+  # needlessly re-transcribed in one run, reported as success.
+  #
+  # One awk process, no pipe, so no pipefail interaction. Exact comparison on
+  # tab-separated field 1 -- not a whole-line match, and no regex, so filenames
+  # full of punctuation stay safe. Missing or empty ledger yields no match,
+  # which is the same behaviour as before. Duplicate lines are harmless: it
+  # exits on the first hit.
+  if awk -F'\t' -v n="$base" '$1==n {f=1; exit} END {exit f?0:1}' "$LEDGER"; then
     skipped=$((skipped+1))
     continue
   fi
