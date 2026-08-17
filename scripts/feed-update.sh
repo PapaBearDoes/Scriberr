@@ -66,8 +66,28 @@ command -v flock   >/dev/null || die "flock is required (util-linux)"
 
 # Only one run at a time. systemd already refuses to start a second instance of
 # the service, but that does not stop a hand-run overlapping a timer-run.
-exec 9>"$LOCK" || die "cannot open lock $LOCK"
-flock -n 9 || { log "another run holds $LOCK -- exiting"; exit 0; }
+#
+# `<>` NOT `>`: a plain `>` truncates on open, so a contender would wipe the
+# holder's PID out of the file before flock even told it to back off.
+exec 9<>"$LOCK" || die "cannot open lock $LOCK"
+
+if ! flock -n 9; then
+  # A bare "another run holds the lock" line is useless: it is identical whether
+  # a healthy run is transcribing or something wedged an hour ago and never let
+  # go. Report WHO and for HOW LONG so the skip is actionable. Seen 17 Aug 2026,
+  # where two starts logged that line and systemd reported both as success.
+  holder=$(head -1 "$LOCK" 2>/dev/null)
+  if [ -n "${holder:-}" ] && [ -z "${holder//[0-9]/}" ] && kill -0 "$holder" 2>/dev/null; then
+    age=$(ps -o etime= -p "$holder" 2>/dev/null | tr -d ' ')
+    log "pid $holder has held $LOCK for ${age:-unknown} -- exiting"
+  else
+    log "$LOCK is held but the holder is unrecorded or gone -- exiting"
+  fi
+  exit 0
+fi
+
+# Record the holder for the message above. Safe to truncate: we hold the lock.
+printf '%s\n' "$$" > "$LOCK"
 
 # Arm the lazy automount BEFORE anything checks it. /storage/nas is mounted
 # noauto,x-systemd.automount on this box, so the NFS mount does not exist until
@@ -120,26 +140,29 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id; do
   yt-dlp --restrict-filenames --no-progress \
          --download-archive "$archive" \
          -o "$audio_dir/%(upload_date>%Y-%m-%d)s - %(title)s.%(ext)s" \
-         "$feed"
+         "$feed" 9>&-
   rc=$?
   after=$(find "$audio_dir" -maxdepth 1 -name '*.mp3' | wc -l)
   new=$((after - before))
   [ "$rc" -eq 0 ] || { log "    yt-dlp exited $rc"; had_error=1; }
   log "    pulled $new new episode(s), $after on disk"
 
-  # 2. Transcribe. Skips everything already in the ledger, so on a quiet hour
-  #    this walks 634 lines and does nothing. Cheap.
-  if [ "$new" -gt 0 ] || [ ! -f "$ledger" ]; then
-    PROFILE_ID="$profile_id" LEDGER="$ledger" "$HERE/bulk-transcribe.sh" "$audio_dir" \
-      || { log "    bulk-transcribe.sh exited $?"; had_error=1; }
-  else
-    log "    nothing new to transcribe"
-  fi
+  # 2. Transcribe. UNCONDITIONAL, like the export below. An earlier version
+  #    gated this on `new -gt 0`, which had the same recovery hole the export
+  #    stage was deliberately written to avoid: audio pulled by a run that died
+  #    before transcribing would never be retried until some unrelated episode
+  #    happened to arrive. It also meant the ledger skip check never executed on
+  #    a quiet hour, which is exactly when you want it exercised -- it is why a
+  #    broken skip check went untested on 17 Aug 2026.
+  #    Cost of running it every tick: one awk call per episode and two profile
+  #    curls, then "already-done N". Cheap.
+  PROFILE_ID="$profile_id" LEDGER="$ledger" "$HERE/bulk-transcribe.sh" "$audio_dir" 9>&- \
+    || { log "    bulk-transcribe.sh exited $?"; had_error=1; }
 
-  # 3. Export. Runs unconditionally, not only when something was pulled: a run
-  #    that transcribed successfully and then failed to export (NAS down, say)
-  #    must be recoverable by the next tick without new audio arriving.
-  LEDGER="$ledger" OUTDIR="$outdir" "$HERE/export-transcripts.sh" \
+  # 3. Export. Also unconditional: a run that transcribed successfully and then
+  #    failed to export (NAS down, say) must be recoverable by the next tick
+  #    without new audio arriving.
+  LEDGER="$ledger" OUTDIR="$outdir" "$HERE/export-transcripts.sh" 9>&- \
     || { log "    export-transcripts.sh exited $?"; had_error=1; }
 
 done < "$SHOWS"
