@@ -69,6 +69,11 @@ TAG_RE = re.compile(r"<[^>]+>")
 PARA_RE = re.compile(r"</p\s*>|<br\s*/?>", re.I)
 # (02:03) or (1:02:03) at the start of a line, then the moment description.
 MOMENT_RE = re.compile(r"^\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-\u2013]?\s*(.+)$")
+# Pre-2025 episodes use a different description format: no timestamps, but an
+# unordered list of discussion points. Same human-written value, coarser
+# location. 25-char floor drops "- " separators and stray dashes.
+BULLET_RE = re.compile(r"^[-\u2022*\u2013]\s+(.{25,})$")
+BULLET_HEADER_RE = re.compile(r"(main\s+discussion\s+points|discussion\s+points|main\s+points|key\s+takeaways|takeaways)", re.I)
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 NORM_RE = re.compile(r"[^a-z0-9 ]+")
 
@@ -122,6 +127,38 @@ def parse_moments(description):
             continue
     moments.sort(key=lambda x: x[0])
     return moments, had_header
+
+
+def parse_bullets(description):
+    """
+    Pull untimestamped discussion points out of the description.
+
+    These are the fallback ground truth for the 111 episodes with no Best
+    Moments -- all 47 of 2023 and 58 of 2024, measured 17 Aug 2026. They give
+    episode-level rather than chunk-level location, which is a weaker target but
+    far from useless here: 2023 episodes run about six minutes, so an episode is
+    only three or four chunks.
+
+    Bullets are collected whether or not a recognised header precedes them, and
+    the header flag is reported separately, so format drift shows up as a number
+    instead of being silently absorbed.
+    """
+    text = strip_html(description)
+    had_header = bool(BULLET_HEADER_RE.search(text))
+    bullets = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or MOMENT_RE.match(line):
+            continue
+        m = BULLET_RE.match(line)
+        if not m:
+            continue
+        body = m.group(1).strip()
+        # Skip promo lines: they are the only bullets carrying bare URLs.
+        if "http" in body.lower():
+            continue
+        bullets.append(body)
+    return bullets, had_header
 
 
 def words(text):
@@ -232,6 +269,7 @@ def measure_episode(stem, tpath, spath):
     ]
     speakers = sorted({s.get("speaker") for s in segments if s.get("speaker")})
     moments, had_header = parse_moments(side.get("description", ""))
+    bullets, had_bullet_header = parse_bullets(side.get("description", ""))
     duration = side.get("duration") or (segments[-1].get("end") if segments else 0)
 
     total_words = sum(seg_words)
@@ -264,6 +302,9 @@ def measure_episode(stem, tpath, spath):
         "has_sidecar": bool(side),
         "best_moments_header": had_header,
         "n_moments": len(moments),
+        "bullet_header": had_bullet_header,
+        "n_bullets": len(bullets),
+        "eval_tier": "chunk" if moments else ("episode" if bullets else "none"),
         "moment_gaps_s": summarize(gaps),
         "promo_segment_hits": promo_hits,
         "chunks": {
@@ -271,7 +312,7 @@ def measure_episode(stem, tpath, spath):
             "by_window_250": summarize(chunk_word_counts(chunks_by_window(segments, 250))),
             "by_speaker_turn": summarize(chunk_word_counts(chunks_by_speaker(segments))),
         },
-    }, segments, moments
+    }, segments, moments, bullets
 
 
 def window_text(segments, t, before=15.0, after=75.0):
@@ -318,7 +359,7 @@ def main():
         tpath = os.path.join(args.transcripts, stem + ".json")
         spath = os.path.join(args.audio, stem + ".info.json")
         try:
-            ep, segments, moments = measure_episode(stem, tpath, spath)
+            ep, segments, moments, bullets = measure_episode(stem, tpath, spath)
         except Exception as exc:            # keep going; report at the end
             unreadable.append({"stem": stem, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -333,6 +374,7 @@ def main():
 
         for t, desc in moments:
             eval_rows.append({
+                "tier": "chunk",
                 "stem": stem,
                 "episode_number": ep["episode_number"],
                 "upload_date": ep["upload_date"],
@@ -341,12 +383,30 @@ def main():
                 "transcript_window": window_text(segments, t),
             })
 
+        # Tier 2, used only where there are no timestamps. Episode-level target:
+        # the correct answer is "any chunk from this episode". Weaker, but it is
+        # the only ground truth that reaches 2023.
+        if not moments:
+            for desc in bullets:
+                eval_rows.append({
+                    "tier": "episode",
+                    "stem": stem,
+                    "episode_number": ep["episode_number"],
+                    "upload_date": ep["upload_date"],
+                    "t_seconds": None,
+                    "publisher_description": desc,
+                    "transcript_window": None,
+                })
+
         if i % 50 == 0:
             print(f"  ... {i}/{len(stems)}", file=sys.stderr)
 
     # ---------------------------------------------------------- aggregates
     n = len(episodes)
     with_moments = [e for e in episodes if e["n_moments"] > 0]
+    with_bullets = [e for e in episodes if e["n_bullets"] > 0]
+    tier2 = [e for e in episodes if e["eval_tier"] == "episode"]
+    no_eval = [e for e in episodes if e["eval_tier"] == "none"]
     solo = [e for e in episodes if e["n_speakers"] <= 1]
     all_gaps = []
     for e in episodes:
@@ -371,6 +431,20 @@ def main():
             "moments_per_episode": summarize([e["n_moments"] for e in with_moments]),
             "median_gap_between_moments_s": summarize(all_gaps),
         },
+        "discussion_bullets": {
+            "episodes_with_any": len(with_bullets),
+            "episodes_with_header": sum(1 for e in episodes if e["bullet_header"]),
+            "bullets_total": sum(e["n_bullets"] for e in episodes),
+            "bullets_per_episode": summarize([e["n_bullets"] for e in with_bullets]),
+        },
+        "eval_coverage": {
+            "tier1_chunk_level_episodes": len(with_moments),
+            "tier2_episode_level_episodes": len(tier2),
+            "no_ground_truth_episodes": len(no_eval),
+            "no_ground_truth_stems": [e["stem"] for e in no_eval][:40],
+            "combined_coverage_pct": round(100.0 * (n - len(no_eval)) / n, 1) if n else 0,
+            "by_year": {},
+        },
         "speakers": {
             "solo_episodes": len(solo),
             "solo_pct": round(100.0 * len(solo) / n, 1) if n else 0,
@@ -388,6 +462,11 @@ def main():
         },
         "promo_heuristic_segment_hits": sum(e["promo_segment_hits"] for e in episodes),
     }
+
+    by_year = defaultdict(lambda: Counter())
+    for e in episodes:
+        by_year[(e["upload_date"] or "????")[:4]][e["eval_tier"]] += 1
+    agg["eval_coverage"]["by_year"] = {y: dict(c) for y, c in sorted(by_year.items())}
 
     top_repeated = [
         {
@@ -420,6 +499,7 @@ def main():
 
     # ------------------------------------------------------------- report
     b = agg["best_moments"]
+    ec = agg["eval_coverage"]
     print()
     print(f"episodes            {n} measured, {len(unreadable)} unreadable, "
           f"{agg['episodes_missing_sidecar']} missing a sidecar")
@@ -433,6 +513,14 @@ def main():
     print(f"                    median gap between them: "
           f"{b['median_gap_between_moments_s'].get('median')} s")
     print()
+    print(f"eval coverage       tier1 chunk-level {ec['tier1_chunk_level_episodes']}, "
+          f"tier2 episode-level {ec['tier2_episode_level_episodes']}, "
+          f"none {ec['no_ground_truth_episodes']}  "
+          f"({ec['combined_coverage_pct']}% covered)")
+    for y, c in ec["by_year"].items():
+        print(f"                    {y}  chunk {c.get('chunk', 0):>3}  "
+              f"episode {c.get('episode', 0):>3}  none {c.get('none', 0):>3}")
+    print()
     print(f"solo episodes       {agg['speakers']['solo_episodes']}/{n} "
           f"({agg['speakers']['solo_pct']}%)   speaker counts: {agg['speakers']['distribution']}")
     print()
@@ -443,7 +531,9 @@ def main():
     print(f"promo heuristic     {agg['promo_heuristic_segment_hits']:,} segments matched "
           f"a promo term (HEURISTIC, eyeball repeated-segments.txt)")
     print()
-    print(f"eval candidates     {len(eval_rows):,} written")
+    print(f"eval candidates     {len(eval_rows):,} written "
+          f"({sum(1 for r in eval_rows if r['tier'] == 'chunk'):,} chunk-level, "
+          f"{sum(1 for r in eval_rows if r['tier'] == 'episode'):,} episode-level)")
     print(f"wrote               {out_json}")
     print(f"                    {out_eval}")
     print(f"                    {out_rep}")
