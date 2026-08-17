@@ -12,7 +12,16 @@
 #   `auto_transcription_enabled` and `default_profile_id`. That is an implicit
 #   profile you cannot see per job. This script POSTs the profile's parameters
 #   explicitly to /start, so every job carries settings you specified.
-#   The watcher is still the right tool for the ongoing weekly episode.
+#
+#   THE WATCHER IS NOT THE RIGHT TOOL FOR THE STANDING FEED EITHER -- an earlier
+#   version of this comment said it was, and that was written before we learned
+#   Scriberr keeps transcripts in scriberr.db rather than on disk. Rejected
+#   again 17 Aug 2026 for three reasons: an export step has to run on a schedule
+#   regardless, so the choice was never watcher-vs-timer; the watcher writes no
+#   ledger line, and the ledger is the only link between a job UUID and an
+#   episode; and one server-wide default profile cannot serve several shows,
+#   since Sortformer caps at 4 speakers and a panel show needs pyannote.
+#   This script is driven hourly by feed-update.sh. See [[Scriberr Plan]].
 #
 # USAGE:
 #   read -rsp 'API key: ' APIKEY; echo; export APIKEY
