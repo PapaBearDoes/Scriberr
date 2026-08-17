@@ -30,6 +30,7 @@
 #   ./scripts/feed-update.sh
 #   SHOW=dtnt ./scripts/feed-update.sh      # one show only
 #   DRY=1 ./scripts/feed-update.sh          # print the plan, touch nothing
+#   FULL=1 ./scripts/feed-update.sh         # full feed scan, see --break-on-existing below
 #
 # ENV:
 #   APIKEY       required. Under systemd it comes from EnvironmentFile, never
@@ -38,6 +39,8 @@
 #   SHOWS        default <this script's dir>/shows.tsv
 #   SHOW         limit to one slug
 #   DRY          1 = report only
+#   FULL         1 = scan the whole feed instead of stopping at the first
+#                episode already in the archive. Use after a failed download.
 #
 # ADDING A SHOW: one row in shows.tsv. Its first run is a full backfill of that
 #   catalogue, not an increment, and may take hours. That is correct and it is
@@ -51,6 +54,7 @@ SHOWS="${SHOWS:-$HERE/shows.tsv}"
 BASE="${SCRIBERR_URL:-http://localhost:8080}"
 SHOW="${SHOW:-}"
 DRY="${DRY:-0}"
+FULL="${FULL:-0}"
 LOCK="${LOCK:-/tmp/scriberr-feed.lock}"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -136,15 +140,33 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id; do
 
   # 1. Pull. --no-progress keeps the journal readable; progress bars in a
   #    non-tty log are thousands of useless lines.
+  #
+  #    --break-on-existing MATTERS MORE THAN IT LOOKS. yt-dlp checks the archive
+  #    only AFTER resolving each item's real media URL, which costs two webpage
+  #    fetches per episode against Spreaker and Captivate. Without it a quiet
+  #    hourly run makes ~1,270 requests to discover that nothing changed --
+  #    ~30,000 a day to a publisher's CDN. Measured 17 Aug 2026: ~1.5 items/sec,
+  #    about seven minutes for a full pass. The feed is newest-first, so
+  #    breaking at the first archived item costs three requests instead.
+  #
+  #    THE TRADE-OFF: an episode that fails to download is never written to the
+  #    archive, and newer episodes above it will stop the scan before yt-dlp
+  #    reaches it again. That gap is NOT silent -- the failure makes yt-dlp exit
+  #    non-zero, this script logs it and exits non-zero, and systemd marks the
+  #    service failed. Recover with:  FULL=1 ./scripts/feed-update.sh
   before=$(find "$audio_dir" -maxdepth 1 -name '*.mp3' | wc -l)
-  yt-dlp --restrict-filenames --no-progress \
-         --download-archive "$archive" \
+  ytflags=(--restrict-filenames --no-progress --download-archive "$archive")
+  [ "$FULL" = "1" ] || ytflags+=(--break-on-existing)
+  yt-dlp "${ytflags[@]}" \
          -o "$audio_dir/%(upload_date>%Y-%m-%d)s - %(title)s.%(ext)s" \
          "$feed" 9>&-
   rc=$?
   after=$(find "$audio_dir" -maxdepth 1 -name '*.mp3' | wc -l)
   new=$((after - before))
-  [ "$rc" -eq 0 ] || { log "    yt-dlp exited $rc"; had_error=1; }
+  # 101 is yt-dlp's "stopped early because of --break-on-existing", which is the
+  # expected outcome of every quiet run. Treating it as failure would mark the
+  # service failed hourly and bury real errors.
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 101 ] || { log "    yt-dlp exited $rc"; had_error=1; }
   log "    pulled $new new episode(s), $after on disk"
 
   # 2. Transcribe. UNCONDITIONAL, like the export below. An earlier version
