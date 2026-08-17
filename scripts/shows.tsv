@@ -1,0 +1,38 @@
+# shows.tsv -- the standing feed's show table. One row per podcast.
+#
+# feed-update.sh reads this. Adding a show is a row here and nothing else:
+# no code change, no new unit, no new timer.
+#
+# TAB-SEPARATED. Seven fields. Blank lines and #-comments are ignored.
+# The literal string $HOME is expanded by the script, so paths stay portable
+# and this file carries no username.
+#
+#   slug         short id, used only in log lines
+#   feed         RSS feed URL, passed straight to yt-dlp
+#   audio_dir    where mp3s and .info.json sidecars land
+#   archive      yt-dlp --download-archive file; this is what stops re-downloads
+#   ledger       bulk-transcribe.sh resume ledger: mp3 filename -> job UUID
+#   outdir       where export-transcripts.sh writes .json and .txt
+#   profile_id   Scriberr transcription profile applied to THIS show's jobs
+#
+# WHY EVERY PATH IS SPELLED OUT INSTEAD OF DERIVED FROM THE SLUG:
+#   Do This NOT That already has 634 episodes recorded in a ledger at
+#   $HOME/podcasts/.transcribed.tsv and 634 pairs of files in a flat
+#   transcripts/ directory. Deriving paths from the slug would point
+#   bulk-transcribe.sh at an empty ledger, and it would cheerfully re-transcribe
+#   the entire back catalogue. Explicit paths keep the existing corpus untouched.
+#
+# WHEN SHOW #2 ARRIVES: give it a per-show subdirectory under transcripts/.
+#   The flat directory is a legacy of there having been exactly one show, and
+#   two shows in one directory means filename collisions are possible and the
+#   output carries no show identity. Whether to also move show #1's 634 pairs
+#   down into a subdirectory is a decision for that day, not a default.
+#
+# PER-SHOW PROFILES ARE THE POINT.
+#   Sortformer caps at 4 speakers; a panel show past that needs a pyannote
+#   profile instead. A solo-monologue show wants a different max-speaker bound
+#   than a two-host show. This column is why the CLI watcher was rejected --
+#   it applies one server-wide default profile to everything it uploads.
+#
+#slug	feed	audio_dir	archive	ledger	outdir	profile_id
+dtnt	https://feeds.captivate.fm/do-this-not-that/	$HOME/podcasts/DoThisNotThat	$HOME/podcasts/.archive-dtnt.txt	$HOME/podcasts/.transcribed.tsv	/storage/nas/ai/scriberr/transcripts	56483c7a-76f1-41ea-aa50-03afcf0fd781
