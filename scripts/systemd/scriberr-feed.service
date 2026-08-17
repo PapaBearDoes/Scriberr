@@ -1,0 +1,36 @@
+[Unit]
+Description=Scriberr standing feed -- pull, transcribe, export
+Documentation=https://github.com/PapaBearDoes/Scriberr
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# CONFIRM BOTH OF THESE BEFORE INSTALLING. They are the only values in this
+# file that assume a username, and it was read from notes rather than from the
+# box: `id -un` on Hermes settles it.
+User=hermes
+ExecStart=/home/hermes/scriberr/scripts/feed-update.sh
+
+# The API key lives here and NOWHERE else -- not in the unit, not in the
+# script, not in shows.tsv, not in any vault note.
+#   sudo install -m 600 -o root -g root /dev/null /etc/scriberr-feed.env
+#   sudo sh -c 'echo APIKEY=... > /etc/scriberr-feed.env'
+EnvironmentFile=/etc/scriberr-feed.env
+
+# No RuntimeMaxSec on purpose. Adding a show means its first run is a full
+# backfill of that catalogue, which can legitimately run for hours, and a
+# timeout sized for the weekly increment would kill it. systemd will not start
+# a second instance while this one is active, so a long run simply defers the
+# next tick rather than piling up.
+#
+# KNOWN, UNADDRESSED: bulk-transcribe.sh polls job status in an unbounded loop.
+# It breaks on `failed` and on an unreadable status, but a job stuck in
+# `processing` forever would block this service indefinitely and silently.
+# Never observed across 634 episodes. Left alone rather than pre-solved; if it
+# ever happens the symptom is a service that has been active for days, visible
+# in `systemctl status scriberr-feed`.
+
+Nice=10
+IOSchedulingClass=idle
