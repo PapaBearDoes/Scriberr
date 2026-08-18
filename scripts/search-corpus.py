@@ -56,15 +56,10 @@ def clock(seconds):
     return f"{s // 60}:{s % 60:02d}"
 
 
-def pretty_date(raw):
-    raw = raw or ""
-    return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}" if len(raw) == 8 else (raw or "undated")
-
-
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("query", nargs="+", help="what you want to know")
+    ap.add_argument("query", nargs="*", help="what you want to know")
     ap.add_argument("--index", default=DEFAULT_INDEX)
     ap.add_argument("-k", type=int, default=6, help="passages to return")
     ap.add_argument("--max-per-episode", type=int, default=2, help="0 disables")
@@ -73,6 +68,13 @@ def main():
     ap.add_argument("--format", choices=["md", "text", "json"], default="md")
     ap.add_argument("--min-term-len", type=int, default=2)
     args = ap.parse_args()
+
+    # `nargs="*"` rather than "+" so a bare run prints the full help instead of
+    # `error: the following arguments are required: query`, which is the least
+    # useful thing to show someone opening the tool for the first time.
+    if not args.query:
+        ap.print_help()
+        return
 
     if not os.path.exists(args.index):
         sys.exit(f"ABORT: no index at {args.index}\n"
