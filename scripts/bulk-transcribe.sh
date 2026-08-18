@@ -78,7 +78,12 @@ done_count=0
 ok=0; failed=0; skipped=0
 
 for f in "$AUDIO_DIR"/*.mp3; do
-  [ -e "$f" ] || { echo "no mp3 files in $AUDIO_DIR"; exit 1; }
+  # An empty audio directory is a LEGITIMATE state, not an error: a show added
+  # to shows.tsv has one until its backfill runs. Exiting non-zero here made
+  # feed-update.sh mark the whole service failed on every tick, which destroys
+  # `systemctl --failed` as a monitoring signal exactly when it is the only one
+  # this pipeline has. A MISSING directory still fails, above.
+  [ -e "$f" ] || { echo "no mp3 files yet in $AUDIO_DIR (nothing to do)"; exit 0; }
   base=$(basename "$f")
 
   # Resume: ledger holds one tab-separated line per finished episode.

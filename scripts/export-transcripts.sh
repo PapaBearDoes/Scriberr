@@ -73,6 +73,18 @@ if ! mountpoint -q /storage/nas; then
 fi
 mkdir -p "$OUTDIR" || exit 1
 
+# Prove the directory is WRITABLE, not merely present. On 2026-08-18 the podcast
+# tree was owned 1001:1001 (nas) mode 0755 while this runs as uid 1000, so every
+# write was denied -- and because the ledger and archive are uid-1000 FILES,
+# appends kept working and nothing looked wrong until a new transcript needed
+# creating. Failing here beats failing 600 times below.
+if ! touch "$OUTDIR/.wtest" 2>/dev/null; then
+  echo "cannot write to $OUTDIR -- check ownership and group permissions"
+  echo "  ls -ldn '$OUTDIR'   and remember NFS matches on UID, not username"
+  exit 1
+fi
+rm -f "$OUTDIR/.wtest"
+
 echo "ledger  $LEDGER ($(wc -l < "$LEDGER") entries)"
 echo "outdir  $OUTDIR"
 echo
@@ -104,14 +116,29 @@ while IFS=$'\t' read -r mp3 job status extra; do
     continue
   fi
 
-  # Full envelope, pretty-printed so it diffs sanely in git or a review.
-  echo "$body" | jq '.' > "$out_json"
+  # CHECK THE WRITES. An earlier version redirected jq straight to the output
+  # and never looked. On 2026-08-18 both writes failed with Permission denied
+  # and the run still printed `exported 1` -- the counter only ever tracked API
+  # failures, so a full write failure was reported as a success. A stage that
+  # lies about what it did is worse than one that fails.
+  #
+  # No cleanup needed if the .txt fails after the .json succeeds: the skip check
+  # above requires BOTH files non-empty, so the next run retries the episode.
+  if ! echo "$body" | jq '.' > "$out_json" || [ ! -s "$out_json" ]; then
+    printf '%-4s WRITE FAILED  %s\n' "$n." "$stem"
+    failed=$((failed+1))
+    continue
+  fi
 
   # Flattened reading copy. Timestamps as [m:ss] to match what the UI exports.
-  echo "$body" | jq -r '
+  if ! echo "$body" | jq -r '
     .transcript.segments[]
     | "[\(.start | floor | (./60|floor|tostring) + ":" + (.%60|floor|tostring|if length<2 then "0"+. else . end))] \(.speaker // "speaker_?"): \(.text)"
-  ' > "$out_txt"
+  ' > "$out_txt" || [ ! -s "$out_txt" ]; then
+    printf '%-4s WRITE FAILED  %s\n' "$n." "$stem"
+    failed=$((failed+1))
+    continue
+  fi
 
   segs=$(echo "$body" | jq -r '.transcript.segments | length')
   printf '%-4s %-5s segs  %s\n' "$n." "$segs" "$stem"

@@ -189,7 +189,13 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id ytf
   # error, no missing file where anything looked for it, just an episode that
   # contributes nothing to the eval set and falls back to window chunking.
   # Caught only because a count reconciliation came up two short.
-  ytflags=(--restrict-filenames --no-progress --write-info-json
+  # --no-write-playlist-metafiles: --write-info-json also emits a PLAYLIST-level
+  # .info.json for the feed itself (`NA - <Show Name>.info.json`). It is junk we
+  # never read, it pollutes the audio directory that measure-corpus.py globs,
+  # and on 2026-08-18 failing to write it was what made yt-dlp exit 1 on BOTH
+  # shows -- the per-episode downloads were fine.
+  ytflags=(--restrict-filenames --no-progress
+           --write-info-json --no-write-playlist-metafiles
            --download-archive "$archive")
   [ "$FULL" = "1" ] || ytflags+=(--break-on-existing)
   # Per-show extra flags, field 8. Deliberately UNQUOTED so multiple flags word
