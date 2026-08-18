@@ -48,7 +48,7 @@ set -uo pipefail
 
 BASE="${SCRIBERR_URL:-http://localhost:8080}/api/v1"
 LEDGER="${LEDGER:-$HOME/podcasts/.transcribed.tsv}"
-OUTDIR="${OUTDIR:-/storage/nas/ai/scriberr/transcripts}"
+OUTDIR="${OUTDIR:-/storage/nas/ai/scriberr/podcasts/transcripts}"
 LIMIT="${LIMIT:-0}"
 FORCE="${FORCE:-0}"
 
