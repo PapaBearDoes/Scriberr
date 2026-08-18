@@ -501,7 +501,7 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
                 "tier": tier,
                 "rank": rank,
                 "missed_at_5": True,
-                "missed_at_10": rank is None,
+                "not_in_top_k_max": rank is None,
                 "likely_false_miss": likely_false,
                 "likely_false_miss_weighted": likely_false_w,
                 "stem": row["stem"],
@@ -540,8 +540,13 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
         false_w = [m for m in misses if m["likely_false_miss_weighted"]]
         out["miss_analysis"] = {
             "n_misses_at_5": len(misses),
-            "n_misses_at_10": sum(1 for m in misses if m["missed_at_10"]),
-            "n_ranked_6_to_10": sum(1 for m in misses if not m["missed_at_10"]),
+            # NOT "at 10" -- this is `rank is None`, i.e. absent from the whole
+            # candidate list, which is max(ks). That was 10 before ks gained
+            # 25/50/100 and is 100 now. The old name kept reporting "at 10"
+            # while measuring something else.
+            "n_not_in_top_k_max": sum(1 for m in misses if m["not_in_top_k_max"]),
+            "k_max": maxk,
+            "n_ranked_below_5_but_found": sum(1 for m in misses if not m["not_in_top_k_max"]),
             "overlap_histogram_terms_present": dict(sorted(overlap_hist.items())),
             "zero_overlap_pct": round(100.0 * sum(1 for m in misses if not m["terms_present_in_target"]) / n_miss, 1),
             "high_overlap_pct": round(100.0 * sum(1 for m in misses if m["target_overlap_fraction"] >= 0.6) / n_miss, 1),
@@ -744,8 +749,8 @@ def main():
                 fh.write(json.dumps(m, ensure_ascii=False) + "\n")
         print()
         print(f"MISS ANALYSIS  (config 1 of {len(configs)}, {ma.get('n_misses_at_5')} misses at k=5)")
-        print(f"  of those, ranked 6-10                {ma.get('n_ranked_6_to_10')}"
-              f"   (never in top 10: {ma.get('n_misses_at_10')})")
+        print(f"  of those, found but ranked >5        {ma.get('n_ranked_below_5_but_found')}"
+              f"   (never in top {ma.get('k_max')}: {ma.get('n_not_in_top_k_max')})")
         print(f"  LIKELY FALSE MISSES, flat (BIASED)   {ma.get('likely_false_miss_pct_FLAT_BIASED')}%"
               "   <- kept only to show the bias")
         print(f"  LIKELY FALSE MISSES, idf-weighted    {ma.get('likely_false_miss_pct_idf_weighted')}%"
