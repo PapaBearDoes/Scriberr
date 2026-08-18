@@ -33,11 +33,18 @@
 #   APIKEY       required. Create in Settings -> API Keys. Never hardcode it here.
 #   SCRIBERR_URL default http://localhost:8080
 #   PROFILE_ID   default is the "Podcast Parakeet + Sortformer" profile
+#   LEDGER       default is Do This NOT That's ledger on the NAS
 #   LIMIT        0 = no limit
 #   POLL         seconds between status checks, default 15
 #
-# The ledger at $LEDGER is the resume mechanism. Delete a line to redo that
-# episode. Delete the file to redo everything.
+# $1 is the audio directory, defaulting to Do This NOT That's on the NAS.
+# IT AND $LEDGER NAME THE SAME SHOW -- keep them in step. Running this with a
+# different directory but the default ledger would skip nothing, re-transcribe
+# everything, and file the results under the wrong show's join. feed-update.sh
+# always passes both explicitly, so this only bites a hand-run.
+#
+# The ledger is the resume mechanism. Delete a line to redo that episode.
+# Delete the file to redo everything.
 
 set -uo pipefail
 
