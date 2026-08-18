@@ -73,6 +73,7 @@ die() { log "ABORT: $*"; exit 1; }
 command -v jq      >/dev/null || die "jq is required"
 command -v yt-dlp  >/dev/null || die "yt-dlp is required"
 command -v flock   >/dev/null || die "flock is required (util-linux)"
+command -v mountpoint >/dev/null || die "mountpoint is required (util-linux)"
 : "${APIKEY:?APIKEY is not set -- export it, or check the EnvironmentFile}"
 
 # Only one run at a time. systemd already refuses to start a second instance of
@@ -100,11 +101,22 @@ fi
 # Record the holder for the message above. Safe to truncate: we hold the lock.
 printf '%s\n' "$$" > "$LOCK"
 
-# Arm the lazy automount BEFORE anything checks it. /storage/nas is mounted
-# noauto,x-systemd.automount on this box, so the NFS mount does not exist until
-# something reads the path. export-transcripts.sh guards with `mountpoint -q`,
-# which would otherwise be evaluated against an unarmed trigger.
+# Arm the lazy automount, THEN VERIFY IT ACTUALLY MOUNTED.
+#
+# /storage/nas is mounted noauto,x-systemd.automount, so the NFS mount does not
+# exist until something reads the path -- hence the `ls`. But `ls` succeeding
+# proves nothing: an unmounted automount point is an ordinary empty directory
+# that reads perfectly well.
+#
+# THIS BECAME LOAD-BEARING ON 2026-08-18, when audio, archives, ledgers and
+# transcripts all moved off the VM and onto the NAS. Before that only the export
+# stage needed the mount, and it does its own `mountpoint` check. Now every
+# stage does. Without this guard, `mkdir -p "$audio_dir"` against a dead
+# automount creates a local directory under the mountpoint and yt-dlp downloads
+# into the wrong filesystem -- tens of GB for a backfill, invisibly, and the
+# files vanish from view the moment the real mount comes back.
 ls /storage/nas >/dev/null 2>&1
+mountpoint -q /storage/nas || die "/storage/nas is not mounted (is Lofn up? is the automount armed?)"
 
 # Is Scriberr actually up? On this host dockerd does not run until WSL is
 # launched, so "down" is a normal state and needs to read as a clear failure
