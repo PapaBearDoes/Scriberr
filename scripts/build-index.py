@@ -44,6 +44,7 @@ that reports success is exactly the failure mode this project keeps hitting.
 import argparse
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -352,16 +353,52 @@ def search(db, query, k, use_stopwords=False, min_len=2):
 # ------------------------------------------------------------------ evaluation
 
 def overlap_fraction(terms, text):
-    """Share of distinct query terms present in a body of text. The whole
-    false-miss diagnostic rests on this: if a returned chunk matches the query
-    as well as the labelled target does, the retriever probably did its job and
-    the LABEL is what is wrong."""
+    """Share of distinct query terms present in a body of text."""
     ts = set(terms)
     if not ts:
         return 0.0, []
     low = (text or "").lower()
     present = sorted(t for t in ts if t in low)
     return len(present) / len(ts), present
+
+
+def build_df(rows):
+    """Document frequency per term across chunks, for the IDF weighting below."""
+    df = Counter()
+    for r in rows:
+        for t in set(WORD_RE.findall(r["body"].lower())):
+            df[t] += 1
+    return df
+
+
+def overlap_weighted(terms, text, df, n_chunks):
+    """
+    IDF-weighted share of query terms present. Replaces the flat count in the
+    false-miss proxy, and the reason matters.
+
+    THE FLAT VERSION WAS RIGGED. BM25 selects the top 5 BECAUSE they contain
+    query terms; the labelled target is not selected that way. Comparing a
+    term-overlap-maximising selection against an unselected reference and asking
+    which has more term overlap will favour the selection almost regardless of
+    real quality -- which is why it returned 86% on 17 Aug and why that number
+    was thrown out.
+
+    Weighting by rarity does not remove the bias, it narrows it: a returned
+    chunk only looks like a genuine alternative if it matches the DISCRIMINATIVE
+    terms, not by picking up "content" and "marketing". STILL A PROXY. Report it
+    beside the flat figure so the gap between them stays visible.
+    """
+    ts = set(terms)
+    if not ts:
+        return 0.0
+    low = (text or "").lower()
+    total = got = 0.0
+    for t in ts:
+        w = math.log((n_chunks + 1) / (df.get(t, 0) + 1)) + 1.0
+        total += w
+        if t in low:
+            got += w
+    return got / total if total else 0.0
 
 
 def target_text(db, row, terms=()):
@@ -390,7 +427,8 @@ def target_text(db, row, terms=()):
     return joined, best
 
 
-def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=False):
+def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=False,
+             df=None, n_chunks=0):
     maxk = max(ks)
     hits = {k: Counter() for k in ks}
     totals = Counter()
@@ -445,14 +483,18 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
             terms = query_terms(row["publisher_description"], use_stopwords, min_len)
             tgt_all, tgt_best = target_text(db, row, terms)
             tgt_frac, present = overlap_fraction(terms, tgt_all)
+            tgt_w = overlap_weighted(terms, tgt_all, df or {}, n_chunks)
 
             best_res_frac, best_res = 0.0, None
+            best_res_w = 0.0
             for r in results[:5]:
                 f, _ = overlap_fraction(terms, r[4])
                 if f > best_res_frac:
                     best_res_frac, best_res = f, r
+                best_res_w = max(best_res_w, overlap_weighted(terms, r[4], df or {}, n_chunks))
 
             likely_false = bool(terms) and best_res_frac > 0 and best_res_frac >= tgt_frac
+            likely_false_w = bool(terms) and best_res_w > 0 and best_res_w >= tgt_w
             overlap_hist[min(len(present), 10)] += 1
             top = results[0] if results else None
             misses.append({
@@ -461,6 +503,7 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
                 "missed_at_5": True,
                 "missed_at_10": rank is None,
                 "likely_false_miss": likely_false,
+                "likely_false_miss_weighted": likely_false_w,
                 "stem": row["stem"],
                 "upload_date": row.get("upload_date"),
                 "t_seconds": row.get("t_seconds"),
@@ -469,7 +512,9 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
                 "terms_searched": terms,
                 "terms_present_in_target": present,
                 "target_overlap_fraction": round(tgt_frac, 3),
+                "target_overlap_weighted": round(tgt_w, 3),
                 "best_result_overlap_fraction": round(best_res_frac, 3),
+                "best_result_overlap_weighted": round(best_res_w, 3),
                 "target_found": bool(tgt_all.strip()),
                 "target_excerpt": tgt_best[:400],
                 "top_result_stem": top[0] if top else None,
@@ -492,6 +537,7 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
         n_miss = len(misses) or 1
         total_q = sum(totals.values()) or 1
         false_misses = [m for m in misses if m["likely_false_miss"]]
+        false_w = [m for m in misses if m["likely_false_miss_weighted"]]
         out["miss_analysis"] = {
             "n_misses_at_5": len(misses),
             "n_misses_at_10": sum(1 for m in misses if m["missed_at_10"]),
@@ -501,13 +547,16 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=F
             "high_overlap_pct": round(100.0 * sum(1 for m in misses if m["target_overlap_fraction"] >= 0.6) / n_miss, 1),
             "target_missing_from_index_pct": round(100.0 * sum(1 for m in misses if not m["target_found"]) / n_miss, 1),
             "median_target_overlap_fraction": round(statistics.median([m["target_overlap_fraction"] for m in misses]), 3) if misses else 0,
-            "likely_false_miss_pct": round(100.0 * len(false_misses) / n_miss, 1),
-            # PROXY, NOT GROUND TRUTH. "A returned chunk matched the query at
-            # least as well as the labelled target did" is evidence the label is
-            # wrong, not proof. Treat this as an upper bound on real quality and
-            # the measured recall as the lower bound; the truth is between them.
+            "likely_false_miss_pct_FLAT_BIASED": round(100.0 * len(false_misses) / n_miss, 1),
+            "likely_false_miss_pct_idf_weighted": round(100.0 * len(false_w) / n_miss, 1),
+            # BOTH ARE PROXIES AND BOTH FAVOUR THE RESULTS. BM25 picks the top 5
+            # because they contain query terms; the label was not picked that
+            # way. IDF weighting narrows the bias, it does not remove it. The
+            # measured recall is the LOWER bound, this is an optimistic UPPER
+            # bound, and quoting only the flattering one is how a system gets
+            # documented as working when it is not.
             "adjusted_recall_at_5_upper_bound": round(
-                out["recall"][5].get("all", 0) + len(false_misses) / total_q, 4),
+                out["recall"][5].get("all", 0) + len(false_w) / total_q, 4),
             "vague_queries_pct": round(100.0 * sum(1 for m in misses if m["n_terms"] <= 4) / n_miss, 1),
         }
     return out, misses
@@ -524,9 +573,11 @@ def run_config(episodes, eval_rows, cfg, ks, index_path=None, collect_misses=Fal
     tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
     tmp.close()
     db = build_index(tmp.name, rows)
+    df = build_df(rows) if collect_misses else None
     try:
         scores, misses = evaluate(db, eval_rows, ks, cfg["stopwords"],
-                                  cfg["min_term_len"], collect_misses)
+                                  cfg["min_term_len"], collect_misses,
+                                  df, len(rows))
     finally:
         db.close()
 
@@ -609,7 +660,13 @@ def main():
         "min_episodes": args.min_episodes, "index_header": args.index_header,
         "stopwords": args.stopwords, "min_term_len": args.min_term_len,
     }
-    ks = [1, 3, 5, 10]
+    # DEEP k IS THE MEASUREMENT THAT SETTLES RANKING VERSUS RETRIEVAL, and it is
+    # unbiased, unlike the false-miss proxy. If recall@50 is far above recall@5,
+    # BM25 is FINDING the right chunks and merely ordering them badly -- fix that
+    # with a reranker over BM25 candidates, not with a second retrieval system.
+    # If recall@100 is barely above recall@10, the chunks are genuinely not being
+    # retrieved and dense retrieval has a real case.
+    ks = [1, 3, 5, 10, 25, 50, 100]
 
     if args.query:
         run_config(episodes, [], base, ks, index_path=args.index)
@@ -656,18 +713,20 @@ def main():
         json.dump(results, fh, indent=2, ensure_ascii=False)
 
     print()
-    print(f"{'mode':<8} {'tw':>4} {'bp':>3} {'sw':>3} {'ml':>3} {'chunks':>7} {'med_w':>6} "
-          f"{'R@1':>7} {'R@5':>7} {'R@10':>7} {'MRR-c':>7} {'MRR-e':>7}")
+    print(f"{'mode':<8} {'tw':>4} {'bp':>3} {'sw':>3} {'ml':>3} {'chunks':>7} "
+          f"{'R@1':>7} {'R@5':>7} {'R@10':>7} {'R@25':>7} {'R@50':>7} {'R@100':>7} {'MRR-c':>7}")
     for r in results:
         c, s = r["config"], r["scores"]
         print(f"{c['mode']:<8} {c['target_words']:>4} {c['min_episodes']:>3} "
               f"{str(c['stopwords'])[0]:>3} {c['min_term_len']:>3} "
-              f"{r['n_chunks']:>7} {r['chunk_words']['median']:>6} "
+              f"{r['n_chunks']:>7} "
               f"{s['recall'][1].get('all', 0):>7.4f} "
               f"{s['recall'][5].get('all', 0):>7.4f} "
               f"{s['recall'][10].get('all', 0):>7.4f} "
-              f"{s['mrr'].get('chunk', 0):>7.4f} "
-              f"{s['mrr'].get('episode', 0):>7.4f}")
+              f"{s['recall'][25].get('all', 0):>7.4f} "
+              f"{s['recall'][50].get('all', 0):>7.4f} "
+              f"{s['recall'][100].get('all', 0):>7.4f} "
+              f"{s['mrr'].get('chunk', 0):>7.4f}")
 
     best = max(results, key=lambda r: r["scores"]["recall"][5].get("all", 0))
     print()
@@ -687,8 +746,10 @@ def main():
         print(f"MISS ANALYSIS  (config 1 of {len(configs)}, {ma.get('n_misses_at_5')} misses at k=5)")
         print(f"  of those, ranked 6-10                {ma.get('n_ranked_6_to_10')}"
               f"   (never in top 10: {ma.get('n_misses_at_10')})")
-        print(f"  LIKELY FALSE MISSES                  {ma.get('likely_false_miss_pct')}%"
-              "   <- a returned chunk matched as well as the label did")
+        print(f"  LIKELY FALSE MISSES, flat (BIASED)   {ma.get('likely_false_miss_pct_FLAT_BIASED')}%"
+              "   <- kept only to show the bias")
+        print(f"  LIKELY FALSE MISSES, idf-weighted    {ma.get('likely_false_miss_pct_idf_weighted')}%"
+              "   <- narrower bias, still a proxy")
         print(f"  zero term overlap with the target    {ma.get('zero_overlap_pct')}%"
               "   <- vocabulary mismatch, the only case embeddings uniquely fix")
         print(f"  60%+ overlap and still missed        {ma.get('high_overlap_pct')}%"
