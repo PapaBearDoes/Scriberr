@@ -42,6 +42,13 @@
 #   FULL         1 = scan the whole feed instead of stopping at the first
 #                episode already in the archive. Use after a failed download.
 #
+#                *** A NEW SHOW'S BACKFILL MUST RUN WITH FULL=1. ***
+#                Feeds are newest-first, so an interrupted backfill leaves the
+#                NEWEST episodes in the archive. Without FULL, the next run hits
+#                item 1, finds it archived, breaks immediately, and the backfill
+#                never resumes. Keep re-running with FULL=1 until the episode
+#                count stops growing, then let the hourly timer take over.
+#
 # ADDING A SHOW: one row in shows.tsv. Its first run is a full backfill of that
 #   catalogue, not an increment, and may take hours. That is correct and it is
 #   resumable -- systemd will not start a second instance while one is running,
@@ -112,7 +119,7 @@ log "feed-update starting  ($BASE)"
 
 shows_run=0; had_error=0
 
-while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id; do
+while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id ytflags_extra; do
   case "${slug:-}" in ''|\#*) continue ;; esac
   [ -n "${profile_id:-}" ] || { log "SKIP $slug -- malformed row, expected 7 tab-separated fields"; had_error=1; continue; }
   [ -z "$SHOW" ] || [ "$SHOW" = "$slug" ] || continue
@@ -133,6 +140,8 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id; do
     log "    ledger   $ledger  ($([ -f "$ledger" ] && wc -l < "$ledger" || echo 0) transcribed)"
     log "    outdir   $outdir"
     log "    profile  $profile_id"
+    log "    ytflags  ${ytflags_extra:-<none>}"
+    [ -s "$archive" ] || log "    NOTE: empty archive -- this is a BACKFILL, run it with FULL=1"
     continue
   fi
 
@@ -157,6 +166,13 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id; do
   before=$(find "$audio_dir" -maxdepth 1 -name '*.mp3' | wc -l)
   ytflags=(--restrict-filenames --no-progress --download-archive "$archive")
   [ "$FULL" = "1" ] || ytflags+=(--break-on-existing)
+  # Per-show extra flags, field 8. Deliberately UNQUOTED so multiple flags word
+  # split. Needed because yt-dlp picks a site-specific extractor by URL and some
+  # of them return an empty playlist for a plain RSS feed -- Art19 does exactly
+  # that, reporting `Downloading 0 items` with no error. Captivate has no
+  # dedicated extractor so it falls through to `generic` and just works.
+  # shellcheck disable=SC2086
+  [ -z "${ytflags_extra:-}" ] || ytflags+=($ytflags_extra)
   yt-dlp "${ytflags[@]}" \
          -o "$audio_dir/%(upload_date>%Y-%m-%d)s - %(title)s.%(ext)s" \
          "$feed" 9>&-
