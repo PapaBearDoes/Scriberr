@@ -176,7 +176,21 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id ytf
   #    non-zero, this script logs it and exits non-zero, and systemd marks the
   #    service failed. Recover with:  FULL=1 ./scripts/feed-update.sh
   before=$(find "$audio_dir" -maxdepth 1 -name '*.mp3' | wc -l)
-  ytflags=(--restrict-filenames --no-progress --download-archive "$archive")
+  # --write-info-json IS NOT OPTIONAL. The .info.json sidecar carries the
+  # publisher's description, and that description is where the timestamped
+  # "Best Moments" and the untimestamped discussion bullets live -- the ENTIRE
+  # retrieval evaluation set is derived from it, along with correctly spelled
+  # guest names that the ASR gets wrong ("Geoff Woods" -> "Jeff Woods").
+  #
+  # THIS FLAG WAS MISSING UNTIL 2026-08-18. The original 634-episode backfill
+  # was run by hand with a different yt-dlp invocation that included it, so the
+  # sidecars existed and nobody noticed the standing feed was not producing
+  # them. Every episode the feed pulled arrived without one, silently: no
+  # error, no missing file where anything looked for it, just an episode that
+  # contributes nothing to the eval set and falls back to window chunking.
+  # Caught only because a count reconciliation came up two short.
+  ytflags=(--restrict-filenames --no-progress --write-info-json
+           --download-archive "$archive")
   [ "$FULL" = "1" ] || ytflags+=(--break-on-existing)
   # Per-show extra flags, field 8. Deliberately UNQUOTED so multiple flags word
   # split. Needed because yt-dlp picks a site-specific extractor by URL and some
