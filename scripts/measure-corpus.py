@@ -52,8 +52,8 @@ import statistics
 import sys
 from collections import Counter, defaultdict
 
-DEFAULT_TRANSCRIPTS = "/storage/nas/ai/scriberr/transcripts"
-DEFAULT_AUDIO = "/storage/nas/ai/scriberr/audio"
+DEFAULT_TRANSCRIPTS = "/storage/nas/ai/scriberr/podcasts/transcripts"
+DEFAULT_AUDIO = "/storage/nas/ai/scriberr/podcasts/audio"
 DEFAULT_OUT = "/storage/nas/ai/scriberr/analysis"
 
 # Promo terms lifted from the Ep. 551 description block. Used only to flag
