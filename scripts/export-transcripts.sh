@@ -14,9 +14,9 @@
 #
 # THE JOIN:
 #   Transcript directories and job IDs are UUIDs and carry no episode identity.
-#   `~/podcasts/.transcribed.tsv`, written by bulk-transcribe.sh, is the join:
-#   column 1 is the mp3 filename (which carries date and title), column 2 is
-#   the job UUID. This script walks that ledger.
+#   The per-show ledger written by bulk-transcribe.sh is the join: column 1 is
+#   the mp3 filename (which carries date and title), column 2 is the job UUID.
+#   This script walks that ledger.
 #
 # USAGE:
 #   read -rsp 'API key: ' APIKEY; echo; export APIKEY
@@ -27,10 +27,17 @@
 # ENV:
 #   APIKEY       required
 #   SCRIBERR_URL default http://localhost:8080
-#   LEDGER       default $HOME/podcasts/.transcribed.tsv
-#   OUTDIR       default /storage/nas/ai/scriberr/transcripts
+#   LEDGER       default is Do This NOT That's ledger on the NAS
+#   OUTDIR       default is Do This NOT That's transcript directory
 #   LIMIT        0 = all
 #   FORCE        1 = overwrite existing output
+#
+#   THE TWO PATH DEFAULTS MUST STAY IN STEP. They name the same show. Pointing
+#   one at dtnt's ledger and the other at the transcripts PARENT would read
+#   dtnt's episodes and write them into the directory that holds every show's
+#   subdirectory -- silently rebuilding the flat layout that was dismantled on
+#   2026-08-18. feed-update.sh always passes both explicitly, so this only
+#   bites a hand-run.
 #
 # OUTPUT, per episode, sharing the stem of the source mp3 so transcripts sit in
 # the same naming space as the audio and the yt-dlp .info.json sidecars:
@@ -47,8 +54,8 @@
 set -uo pipefail
 
 BASE="${SCRIBERR_URL:-http://localhost:8080}/api/v1"
-LEDGER="${LEDGER:-$HOME/podcasts/.transcribed.tsv}"
-OUTDIR="${OUTDIR:-/storage/nas/ai/scriberr/podcasts/transcripts}"
+LEDGER="${LEDGER:-/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv}"
+OUTDIR="${OUTDIR:-/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat}"
 LIMIT="${LIMIT:-0}"
 FORCE="${FORCE:-0}"
 
