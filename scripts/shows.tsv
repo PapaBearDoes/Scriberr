@@ -53,5 +53,5 @@
 #   it applies one server-wide default profile to everything it uploads.
 #
 #slug	feed	audio_dir	archive	ledger	outdir	profile_id	ytflags
-dtnt	https://feeds.captivate.fm/do-this-not-that/	$HOME/podcasts/DoThisNotThat	$HOME/podcasts/DoThisNotThat/.archive-dtnt.txt	$HOME/podcasts/DoThisNotThat/.transcribed.tsv	/storage/nas/ai/scriberr/transcripts/DoThisNotThat	56483c7a-76f1-41ea-aa50-03afcf0fd781
-martech	https://rss.art19.com/martech-podcast	$HOME/podcasts/MarTech	$HOME/podcasts/MarTech/.archive-martech.txt	$HOME/podcasts/MarTech/.transcribed-martech.tsv	/storage/nas/ai/scriberr/transcripts/MarTech	56483c7a-76f1-41ea-aa50-03afcf0fd781	--use-extractors generic
+dtnt	https://feeds.captivate.fm/do-this-not-that/	/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat	/storage/nas/ai/scriberr/podcasts/.archive-dtnt.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat	56483c7a-76f1-41ea-aa50-03afcf0fd781
+martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/audio/MarTech	/storage/nas/ai/scriberr/podcasts/.archive-martech.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-martech.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarTech	56483c7a-76f1-41ea-aa50-03afcf0fd781	--use-extractors generic
