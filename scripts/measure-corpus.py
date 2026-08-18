@@ -2,41 +2,46 @@
 """
 measure-corpus.py -- read-only measurement pass over the transcript corpus.
 
-WHY THIS EXISTS. The retrieval layer has three open questions (chunk boundary,
-embedding model, vector store) and no way to answer any of them, because every
-candidate answer is currently taste. This script replaces the guesses with
-numbers, and produces a labelled evaluation set as a side effect.
+WHY THIS EXISTS. The retrieval layer's design questions (chunk boundary,
+embedding model, vector store) had no way to be answered, because every
+candidate answer was taste. This replaces the guesses with numbers, and
+produces a labelled evaluation set as a side effect.
 
-IT WRITES NOTHING EXCEPT ITS OWN OUTPUT FILES. It never touches the transcripts,
-the sidecars, the audio, or scriberr.db.
+IT WRITES NOTHING EXCEPT ITS OWN OUTPUT FILES. It never touches the
+transcripts, the sidecars, the audio, or scriberr.db.
+
+MULTI-SHOW SINCE 2026-08-18. The podcast tree moved onto the NAS and is now
+laid out per show:
+
+    <root>/transcripts/<Show>/<stem>.json
+    <root>/audio/<Show>/<stem>.info.json      sidecars live WITH the audio
+
+Shows are discovered from the transcripts directory. Every episode, every eval
+candidate and every repeated-segment line carries its show, and the aggregates
+break down per show as well as overall.
+
+USAGE (on Hermes inside WSL, or anywhere /storage/nas is mounted):
+    python3 scripts/measure-corpus.py
+    python3 scripts/measure-corpus.py --show DoThisNotThat
+    python3 scripts/measure-corpus.py --limit 25          # per show, smoke test
 
 WHAT IT ANSWERS
-  1. Do all 634 episodes have publisher "Best Moments" timestamps, or just some?
-     Everything downstream depends on this. Verified present on Ep. 551 only.
+  1. Do all episodes have publisher "Best Moments" timestamps, or just some?
+     Everything downstream depends on this. Measured 17 Aug on Do This NOT
+     That: 82.5%, and none at all before mid-2024.
   2. What is the natural chunk size? Measured from the gaps between those
      human-authored topic boundaries, not picked out of the air.
   3. How many episodes are solo monologues? If most are, "chunk on speaker
      turns" collapses to "one chunk per episode" and is not a boundary rule.
+     (It is not a boundary rule for a different reason -- see the runbook.)
   4. How much of the corpus is boilerplate and ad read? Found by counting
-     repeated segment text across all episodes rather than assuming the
-     five-segment intro claim holds.
-  5. How do three candidate boundary rules actually compare on words per chunk?
+     repeated segment text, PER SHOW, rather than assuming a fixed intro.
+  5. How do three candidate boundary rules compare on words per chunk?
 
-USAGE (on Hermes, inside WSL, where /storage/nas is mounted):
-    python3 scripts/measure-corpus.py
-    python3 scripts/measure-corpus.py --limit 25          # quick smoke test
-    python3 scripts/measure-corpus.py --out /tmp/scratch  # somewhere else
-
-OUTPUTS, written to --out (default /storage/nas/ai/scriberr/analysis/):
-    corpus-measurements.json   per-episode facts plus aggregates
-    eval-candidates.jsonl      one line per Best Moment: the publisher's own
-                               description of a passage, the timestamp, and the
-                               transcript text actually at that timestamp. This
-                               is the retrieval evaluation set -- a query with a
-                               known correct answer location, written by humans
-                               who listened to the show.
-    repeated-segments.txt      the most-repeated segment texts, which is where
-                               intro boilerplate and recurring ad reads show up
+OUTPUTS, written to --out (default <root>/../analysis):
+    corpus-measurements.json   per-episode facts, per-show and overall aggregates
+    eval-candidates.jsonl      one line per labelled retrieval target
+    repeated-segments.txt      per show, where intro/outro/ad reads show up
 
 TOKEN COUNTS ARE ESTIMATES. Deliberately no tiktoken dependency; this reports
 words and characters, and a chars/4 estimate clearly labelled as such. Word
@@ -46,34 +51,35 @@ counts are what the chunk-size decision actually turns on.
 import argparse
 import html
 import json
+import math
 import os
 import re
 import statistics
 import sys
 from collections import Counter, defaultdict
 
-DEFAULT_TRANSCRIPTS = "/storage/nas/ai/scriberr/podcasts/transcripts"
-DEFAULT_AUDIO = "/storage/nas/ai/scriberr/podcasts/audio"
+DEFAULT_ROOT = "/storage/nas/ai/scriberr/podcasts"
 DEFAULT_OUT = "/storage/nas/ai/scriberr/analysis"
 
-# Promo terms lifted from the Ep. 551 description block. Used only to flag
-# candidate ad reads for eyeballing -- this is a HEURISTIC and is reported as
-# one. Do not treat the count as ground truth.
+# Promo terms lifted from a Do This NOT That description block. Used only to
+# flag candidate ad reads for eyeballing -- this is a HEURISTIC and is reported
+# as one. It is also show-specific and will undercount on any other show; the
+# repeated-segment counts are the real instrument.
 PROMO_TERMS = [
-    "guruconference", "eventastic", "newsletter", "subscribe",
+    "guruconference", "guru events", "eventastic", "newsletter", "subscribe",
     "leave a comment", "follow the show", "link in the show notes",
     "sponsor", "brought to you by", "promo code", "sign up",
 ]
 
 TAG_RE = re.compile(r"<[^>]+>")
 PARA_RE = re.compile(r"</p\s*>|<br\s*/?>", re.I)
-# (02:03) or (1:02:03) at the start of a line, then the moment description.
 MOMENT_RE = re.compile(r"^\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-\u2013]?\s*(.+)$")
 # Pre-2025 episodes use a different description format: no timestamps, but an
 # unordered list of discussion points. Same human-written value, coarser
 # location. 25-char floor drops "- " separators and stray dashes.
 BULLET_RE = re.compile(r"^[-\u2022*\u2013]\s+(.{25,})$")
-BULLET_HEADER_RE = re.compile(r"(main\s+discussion\s+points|discussion\s+points|main\s+points|key\s+takeaways|takeaways)", re.I)
+BULLET_HEADER_RE = re.compile(
+    r"(main\s+discussion\s+points|discussion\s+points|main\s+points|key\s+takeaways|takeaways)", re.I)
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 NORM_RE = re.compile(r"[^a-z0-9 ]+")
 
@@ -86,43 +92,33 @@ def strip_html(raw):
         return ""
     text = PARA_RE.sub("\n", raw)
     text = TAG_RE.sub("", text)
-    text = html.unescape(text)
-    # The feed uses U+3164 HANGUL FILLER as a spacer between promo blocks.
-    text = text.replace("\u3164", " ")
+    text = html.unescape(text).replace("\u3164", " ")
     return "\n".join(line.strip() for line in text.split("\n"))
 
 
 def to_seconds(stamp):
-    parts = [int(p) for p in stamp.split(":")]
-    if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    p = [int(x) for x in stamp.split(":")]
+    return p[0] * 60 + p[1] if len(p) == 2 else p[0] * 3600 + p[1] * 60 + p[2]
 
 
 def parse_moments(description):
     """
-    Pull timestamped moments out of the description.
+    Timestamped moments from the description.
 
-    Returns (moments, had_header) where moments is [(seconds, text)] and
-    had_header records whether a 'Best Moments' heading was present. Timestamps
-    are counted whether or not the heading exists, so coverage is measured
-    honestly rather than assumed from one episode's layout.
+    Returns (moments, had_header). Timestamps are counted whether or not a
+    'Best Moments' heading is present, and the header flag is reported
+    separately, so a publisher using a different layout shows up as a number
+    rather than being silently absorbed.
     """
     text = strip_html(description)
     had_header = bool(re.search(r"best\s+moments", text, re.I))
     moments = []
     for line in text.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        m = MOMENT_RE.match(line)
-        if not m:
-            continue
-        desc = m.group(2).strip()
-        if not desc:
+        m = MOMENT_RE.match(line.strip())
+        if not m or not m.group(2).strip():
             continue
         try:
-            moments.append((to_seconds(m.group(1)), desc))
+            moments.append((to_seconds(m.group(1)), m.group(2).strip()))
         except ValueError:
             continue
     moments.sort(key=lambda x: x[0])
@@ -131,17 +127,10 @@ def parse_moments(description):
 
 def parse_bullets(description):
     """
-    Pull untimestamped discussion points out of the description.
-
-    These are the fallback ground truth for the 111 episodes with no Best
-    Moments -- all 47 of 2023 and 58 of 2024, measured 17 Aug 2026. They give
-    episode-level rather than chunk-level location, which is a weaker target but
-    far from useless here: 2023 episodes run about six minutes, so an episode is
-    only three or four chunks.
-
-    Bullets are collected whether or not a recognised header precedes them, and
-    the header flag is reported separately, so format drift shows up as a number
-    instead of being silently absorbed.
+    Untimestamped discussion points -- the fallback ground truth for episodes
+    with no Best Moments. Episode-level rather than chunk-level location, which
+    is weaker but far from useless: 2023 Do This NOT That episodes run about six
+    minutes, so an episode is only three or four chunks.
     """
     text = strip_html(description)
     had_header = bool(BULLET_HEADER_RE.search(text))
@@ -154,8 +143,7 @@ def parse_bullets(description):
         if not m:
             continue
         body = m.group(1).strip()
-        # Skip promo lines: they are the only bullets carrying bare URLs.
-        if "http" in body.lower():
+        if "http" in body.lower():          # promo bullets carry bare URLs
             continue
         bullets.append(body)
     return bullets, had_header
@@ -192,22 +180,61 @@ def summarize(values):
     }
 
 
+# ------------------------------------------------------------ show discovery
+
+def discover_shows(root, only=None):
+    """
+    Find shows from <root>/transcripts/*/ and pair each with its audio
+    directory. Returns [(show, transcripts_dir, audio_dir)].
+
+    A show with transcripts but no audio directory is still returned -- the
+    sidecars are simply missing, which is a measurable fact, not a reason to
+    skip the transcripts.
+    """
+    troot = os.path.join(root, "transcripts")
+    aroot = os.path.join(root, "audio")
+    if not os.path.isdir(troot):
+        sys.exit(f"ABORT: no transcripts directory at {troot}")
+    shows = []
+    for name in sorted(os.listdir(troot)):
+        tdir = os.path.join(troot, name)
+        if not os.path.isdir(tdir):
+            continue
+        if only and name not in only:
+            continue
+        shows.append((name, tdir, os.path.join(aroot, name)))
+    if not shows:
+        sys.exit(f"ABORT: no show directories found under {troot}"
+                 + (f" matching {sorted(only)}" if only else ""))
+    return shows
+
+
+def boilerplate_threshold(n_episodes, floor, fraction):
+    """
+    How many episodes a line must appear in to count as boilerplate.
+
+    PER SHOW, AND PROPORTIONAL. A flat threshold cannot serve a 636-episode
+    show and a 30-episode one at the same time: 20 is 3% of the first and 67%
+    of the second. The floor stops a tiny show from calling a line boilerplate
+    because it happened twice.
+    """
+    return max(floor, int(math.ceil(fraction * n_episodes)))
+
+
 # ------------------------------------------------------- candidate boundaries
 
 def chunks_by_moments(segments, moments):
     """Split at publisher-authored topic boundaries. Segments before the first
-    moment form their own chunk (that is usually the intro boilerplate)."""
+    moment form their own chunk (usually the intro boilerplate)."""
     if not moments:
         return []
     bounds = [m[0] for m in moments]
-    out, cur = [], []
-    idx = 0
+    out, cur, idx = [], [], 0
     for seg in segments:
-        while idx < len(bounds) and seg.get("start", 0) >= bounds[idx]:
+        while idx < len(bounds) and float(seg.get("start", 0)) >= bounds[idx]:
             if cur:
                 out.append(cur)
-            cur = []
-            idx += 1
+            cur, idx = [], idx + 1
         cur.append(seg)
     if cur:
         out.append(cur)
@@ -232,7 +259,8 @@ def chunks_by_window(segments, target_words=250, overlap=1):
 
 def chunks_by_speaker(segments):
     """Group consecutive segments by speaker. Included to demonstrate what it
-    does on a monologue, which is the point."""
+    does on a monologue, which is the point -- measured bimodal and useless on
+    Do This NOT That (median 115 words, p75 1788, max 3319)."""
     out, cur, who = [], [], None
     for seg in segments:
         spk = seg.get("speaker")
@@ -252,7 +280,7 @@ def chunk_word_counts(chunks):
 
 # --------------------------------------------------------------------- per ep
 
-def measure_episode(stem, tpath, spath):
+def measure_episode(show, stem, tpath, spath):
     with open(tpath, encoding="utf-8", errors="replace") as fh:
         tj = json.load(fh)
     side = {}
@@ -284,6 +312,7 @@ def measure_episode(stem, tpath, spath):
     gaps = [b[0] - a[0] for a, b in zip(moments, moments[1:])] if len(moments) > 1 else []
 
     return {
+        "show": show,
         "stem": stem,
         "episode_number": side.get("episode_number"),
         "upload_date": side.get("upload_date"),
@@ -326,106 +355,33 @@ def window_text(segments, t, before=15.0, after=75.0):
     return " ".join(keep).strip()
 
 
-# ----------------------------------------------------------------------- main
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--transcripts", default=DEFAULT_TRANSCRIPTS)
-    ap.add_argument("--audio", default=DEFAULT_AUDIO, help="where the .info.json sidecars live")
-    ap.add_argument("--out", default=DEFAULT_OUT)
-    ap.add_argument("--limit", type=int, default=0, help="stop after N episodes (smoke test)")
-    args = ap.parse_args()
-
-    if not os.path.isdir(args.transcripts):
-        sys.exit(f"ABORT: no transcript directory at {args.transcripts}")
-    os.makedirs(args.out, exist_ok=True)
-
-    stems = sorted(
-        f[:-5] for f in os.listdir(args.transcripts)
-        if f.endswith(".json")
-    )
-    if args.limit:
-        stems = stems[: args.limit]
-    if not stems:
-        sys.exit(f"ABORT: no .json transcripts found in {args.transcripts}")
-
-    episodes = []
-    repeated = Counter()
-    repeated_pos = defaultdict(list)
-    eval_rows = []
-    unreadable = []
-
-    for i, stem in enumerate(stems, 1):
-        tpath = os.path.join(args.transcripts, stem + ".json")
-        spath = os.path.join(args.audio, stem + ".info.json")
-        try:
-            ep, segments, moments, bullets = measure_episode(stem, tpath, spath)
-        except Exception as exc:            # keep going; report at the end
-            unreadable.append({"stem": stem, "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        episodes.append(ep)
-
-        for pos, s in enumerate(segments):
-            norm = normalize(s.get("text"))
-            if len(norm) >= 15:             # ignore "Yeah." and friends
-                repeated[norm] += 1
-                if len(repeated_pos[norm]) < 200:
-                    repeated_pos[norm].append(pos)
-
-        for t, desc in moments:
-            eval_rows.append({
-                "tier": "chunk",
-                "stem": stem,
-                "episode_number": ep["episode_number"],
-                "upload_date": ep["upload_date"],
-                "t_seconds": t,
-                "publisher_description": desc,
-                "transcript_window": window_text(segments, t),
-            })
-
-        # Tier 2, used only where there are no timestamps. Episode-level target:
-        # the correct answer is "any chunk from this episode". Weaker, but it is
-        # the only ground truth that reaches 2023.
-        if not moments:
-            for desc in bullets:
-                eval_rows.append({
-                    "tier": "episode",
-                    "stem": stem,
-                    "episode_number": ep["episode_number"],
-                    "upload_date": ep["upload_date"],
-                    "t_seconds": None,
-                    "publisher_description": desc,
-                    "transcript_window": None,
-                })
-
-        if i % 50 == 0:
-            print(f"  ... {i}/{len(stems)}", file=sys.stderr)
-
-    # ---------------------------------------------------------- aggregates
-    n = len(episodes)
+def show_aggregate(episodes):
+    """Aggregates over one show's episodes. Same shape for the overall roll-up,
+    so per-show and corpus-wide numbers are directly comparable."""
+    n = len(episodes) or 1
     with_moments = [e for e in episodes if e["n_moments"] > 0]
     with_bullets = [e for e in episodes if e["n_bullets"] > 0]
     tier2 = [e for e in episodes if e["eval_tier"] == "episode"]
     no_eval = [e for e in episodes if e["eval_tier"] == "none"]
     solo = [e for e in episodes if e["n_speakers"] <= 1]
-    all_gaps = []
+    all_gaps = [e["moment_gaps_s"]["median"] for e in episodes if e["moment_gaps_s"]["n"]]
+
+    by_year = defaultdict(Counter)
     for e in episodes:
-        if e["moment_gaps_s"]["n"]:
-            all_gaps.append(e["moment_gaps_s"]["median"])
+        by_year[(e["upload_date"] or "????")[:4]][e["eval_tier"]] += 1
 
     def chunk_medians(key):
         return summarize([e["chunks"][key]["median"] for e in episodes if e["chunks"][key]["n"]])
 
-    agg = {
-        "episodes_measured": n,
-        "episodes_unreadable": len(unreadable),
+    return {
+        "episodes": len(episodes),
         "episodes_missing_sidecar": sum(1 for e in episodes if not e["has_sidecar"]),
         "total_segments": sum(e["n_segments"] for e in episodes),
         "total_words": sum(e["total_words"] for e in episodes),
         "total_est_tokens": sum(e["est_tokens"] for e in episodes),
         "best_moments": {
             "episodes_with_any": len(with_moments),
-            "coverage_pct": round(100.0 * len(with_moments) / n, 1) if n else 0,
+            "coverage_pct": round(100.0 * len(with_moments) / n, 1),
             "episodes_with_header": sum(1 for e in episodes if e["best_moments_header"]),
             "moments_total": sum(e["n_moments"] for e in episodes),
             "moments_per_episode": summarize([e["n_moments"] for e in with_moments]),
@@ -435,19 +391,18 @@ def main():
             "episodes_with_any": len(with_bullets),
             "episodes_with_header": sum(1 for e in episodes if e["bullet_header"]),
             "bullets_total": sum(e["n_bullets"] for e in episodes),
-            "bullets_per_episode": summarize([e["n_bullets"] for e in with_bullets]),
         },
         "eval_coverage": {
             "tier1_chunk_level_episodes": len(with_moments),
             "tier2_episode_level_episodes": len(tier2),
             "no_ground_truth_episodes": len(no_eval),
             "no_ground_truth_stems": [e["stem"] for e in no_eval][:40],
-            "combined_coverage_pct": round(100.0 * (n - len(no_eval)) / n, 1) if n else 0,
-            "by_year": {},
+            "combined_coverage_pct": round(100.0 * (len(episodes) - len(no_eval)) / n, 1),
+            "by_year": {y: dict(c) for y, c in sorted(by_year.items())},
         },
         "speakers": {
             "solo_episodes": len(solo),
-            "solo_pct": round(100.0 * len(solo) / n, 1) if n else 0,
+            "solo_pct": round(100.0 * len(solo) / n, 1),
             "distribution": dict(Counter(e["n_speakers"] for e in episodes)),
         },
         "segments": {
@@ -463,85 +418,186 @@ def main():
         "promo_heuristic_segment_hits": sum(e["promo_segment_hits"] for e in episodes),
     }
 
-    by_year = defaultdict(lambda: Counter())
-    for e in episodes:
-        by_year[(e["upload_date"] or "????")[:4]][e["eval_tier"]] += 1
-    agg["eval_coverage"]["by_year"] = {y: dict(c) for y, c in sorted(by_year.items())}
 
-    top_repeated = [
-        {
-            "count": c,
-            "median_position": statistics.median(repeated_pos[t]) if repeated_pos[t] else None,
-            "text": t,
-        }
-        for t, c in repeated.most_common(60)
-        if c > 1
-    ]
+# ----------------------------------------------------------------------- main
 
-    out_json = os.path.join(args.out, "corpus-measurements.json")
-    with open(out_json, "w", encoding="utf-8") as fh:
-        json.dump(
-            {"aggregate": agg, "unreadable": unreadable,
-             "top_repeated_segments": top_repeated, "episodes": episodes},
-            fh, indent=2, ensure_ascii=False,
-        )
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--root", default=DEFAULT_ROOT,
+                    help="podcast root holding transcripts/<Show>/ and audio/<Show>/")
+    ap.add_argument("--out", default=None, help="default <root>/../analysis")
+    ap.add_argument("--show", default=None,
+                    help="comma-separated show directory names; default all")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="stop after N episodes PER SHOW (smoke test)")
+    ap.add_argument("--boiler-floor", type=int, default=10,
+                    help="minimum episodes a line must appear in to count as boilerplate")
+    ap.add_argument("--boiler-fraction", type=float, default=0.05,
+                    help="or this share of the show's episodes, whichever is larger")
+    args = ap.parse_args()
 
-    out_eval = os.path.join(args.out, "eval-candidates.jsonl")
-    with open(out_eval, "w", encoding="utf-8") as fh:
+    only = {s.strip() for s in args.show.split(",")} if args.show else None
+    shows = discover_shows(args.root, only)
+    out_dir = args.out or os.path.join(os.path.dirname(args.root.rstrip("/")), "analysis")
+    os.makedirs(out_dir, exist_ok=True)
+
+    episodes = []
+    eval_rows = []
+    unreadable = []
+    per_show_repeated = {}
+    per_show_pos = {}
+
+    for show, tdir, adir in shows:
+        stems = sorted(f[:-5] for f in os.listdir(tdir) if f.endswith(".json"))
+        if args.limit:
+            stems = stems[: args.limit]
+        if not stems:
+            print(f"  {show}: no .json transcripts, skipping", file=sys.stderr)
+            continue
+        if not os.path.isdir(adir):
+            print(f"  {show}: WARNING no audio directory at {adir} -- "
+                  f"no sidecars, so no eval candidates", file=sys.stderr)
+
+        repeated = Counter()
+        repeated_pos = defaultdict(list)
+        print(f"  {show}: {len(stems)} episodes", file=sys.stderr)
+
+        for i, stem in enumerate(stems, 1):
+            tpath = os.path.join(tdir, stem + ".json")
+            spath = os.path.join(adir, stem + ".info.json")
+            try:
+                ep, segments, moments, bullets = measure_episode(show, stem, tpath, spath)
+            except Exception as exc:        # keep going; report at the end
+                unreadable.append({"show": show, "stem": stem,
+                                   "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            episodes.append(ep)
+
+            for pos, s in enumerate(segments):
+                norm = normalize(s.get("text"))
+                if len(norm) >= 15:         # ignore "Yeah." and friends
+                    repeated[norm] += 1
+                    if len(repeated_pos[norm]) < 200:
+                        repeated_pos[norm].append(pos)
+
+            for t, desc in moments:
+                eval_rows.append({
+                    "tier": "chunk", "show": show, "stem": stem,
+                    "episode_number": ep["episode_number"],
+                    "upload_date": ep["upload_date"],
+                    "t_seconds": t,
+                    "publisher_description": desc,
+                    "transcript_window": window_text(segments, t),
+                })
+
+            # Tier 2 only where there are no timestamps, so an episode carrying
+            # both is not counted twice at different precisions.
+            if not moments:
+                for desc in bullets:
+                    eval_rows.append({
+                        "tier": "episode", "show": show, "stem": stem,
+                        "episode_number": ep["episode_number"],
+                        "upload_date": ep["upload_date"],
+                        "t_seconds": None,
+                        "publisher_description": desc,
+                        "transcript_window": None,
+                    })
+
+            if i % 100 == 0:
+                print(f"    ... {i}/{len(stems)}", file=sys.stderr)
+
+        per_show_repeated[show] = repeated
+        per_show_pos[show] = repeated_pos
+
+    if not episodes:
+        sys.exit("ABORT: no episodes measured")
+
+    # ------------------------------------------------------------ aggregates
+    by_show = {}
+    for show, _t, _a in shows:
+        eps = [e for e in episodes if e["show"] == show]
+        if eps:
+            by_show[show] = show_aggregate(eps)
+
+    top_repeated = []
+    for show, counter in per_show_repeated.items():
+        n_eps = len([e for e in episodes if e["show"] == show])
+        thresh = boilerplate_threshold(n_eps, args.boiler_floor, args.boiler_fraction)
+        if show in by_show:
+            by_show[show]["boilerplate_threshold_episodes"] = thresh
+        for text, count in counter.most_common(60):
+            if count <= 1:
+                continue
+            positions = per_show_pos[show][text]
+            top_repeated.append({
+                "show": show,
+                "count": count,
+                "over_threshold": count >= thresh,
+                "median_position": statistics.median(positions) if positions else None,
+                "text": text,
+            })
+
+    agg = show_aggregate(episodes)
+    agg["shows"] = sorted(by_show)
+    agg["episodes_unreadable"] = len(unreadable)
+
+    with open(os.path.join(out_dir, "corpus-measurements.json"), "w", encoding="utf-8") as fh:
+        json.dump({"aggregate": agg, "by_show": by_show, "unreadable": unreadable,
+                   "top_repeated_segments": top_repeated, "episodes": episodes},
+                  fh, indent=2, ensure_ascii=False)
+
+    with open(os.path.join(out_dir, "eval-candidates.jsonl"), "w", encoding="utf-8") as fh:
         for row in eval_rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    out_rep = os.path.join(args.out, "repeated-segments.txt")
-    with open(out_rep, "w", encoding="utf-8") as fh:
-        fh.write("count\tmedian_seg_position\ttext\n")
+    with open(os.path.join(out_dir, "repeated-segments.txt"), "w", encoding="utf-8") as fh:
+        fh.write("show\tcount\tover_threshold\tmedian_seg_position\ttext\n")
         for r in top_repeated:
-            fh.write(f"{r['count']}\t{r['median_position']}\t{r['text']}\n")
+            fh.write(f"{r['show']}\t{r['count']}\t{r['over_threshold']}\t"
+                     f"{r['median_position']}\t{r['text']}\n")
 
-    # ------------------------------------------------------------- report
-    b = agg["best_moments"]
-    ec = agg["eval_coverage"]
+    # ---------------------------------------------------------------- report
     print()
-    print(f"episodes            {n} measured, {len(unreadable)} unreadable, "
-          f"{agg['episodes_missing_sidecar']} missing a sidecar")
-    print(f"segments            {agg['total_segments']:,}")
-    print(f"words               {agg['total_words']:,}   (~{agg['total_est_tokens']:,} est. tokens)")
-    print()
-    print(f"best moments        {b['episodes_with_any']}/{n} episodes ({b['coverage_pct']}%), "
-          f"{b['moments_total']:,} total")
-    print(f"                    per episode: median {b['moments_per_episode'].get('median')}, "
-          f"range {b['moments_per_episode'].get('min')}-{b['moments_per_episode'].get('max')}")
-    print(f"                    median gap between them: "
-          f"{b['median_gap_between_moments_s'].get('median')} s")
-    print()
-    print(f"eval coverage       tier1 chunk-level {ec['tier1_chunk_level_episodes']}, "
-          f"tier2 episode-level {ec['tier2_episode_level_episodes']}, "
-          f"none {ec['no_ground_truth_episodes']}  "
-          f"({ec['combined_coverage_pct']}% covered)")
-    for y, c in ec["by_year"].items():
-        print(f"                    {y}  chunk {c.get('chunk', 0):>3}  "
-              f"episode {c.get('episode', 0):>3}  none {c.get('none', 0):>3}")
-    print()
-    print(f"solo episodes       {agg['speakers']['solo_episodes']}/{n} "
-          f"({agg['speakers']['solo_pct']}%)   speaker counts: {agg['speakers']['distribution']}")
-    print()
-    print("median words per chunk, by boundary rule")
-    for k, v in agg["candidate_chunk_sizes_words"].items():
-        print(f"  {k:<16} median {v.get('median')}  p25 {v.get('p25')}  p75 {v.get('p75')}  max {v.get('max')}")
-    print()
-    print(f"promo heuristic     {agg['promo_heuristic_segment_hits']:,} segments matched "
-          f"a promo term (HEURISTIC, eyeball repeated-segments.txt)")
-    print()
-    print(f"eval candidates     {len(eval_rows):,} written "
+    for show in sorted(by_show):
+        a = by_show[show]
+        b = a["best_moments"]
+        ec = a["eval_coverage"]
+        print(f"{show}")
+        print(f"  episodes          {a['episodes']}  "
+              f"({a['episodes_missing_sidecar']} missing a sidecar)")
+        print(f"  segments / words  {a['total_segments']:,} / {a['total_words']:,}  "
+              f"(~{a['total_est_tokens']:,} est. tokens)")
+        print(f"  best moments      {b['episodes_with_any']}/{a['episodes']} "
+              f"({b['coverage_pct']}%), {b['moments_total']:,} total, "
+              f"median gap {b['median_gap_between_moments_s'].get('median')} s")
+        print(f"  eval coverage     chunk {ec['tier1_chunk_level_episodes']}, "
+              f"episode {ec['tier2_episode_level_episodes']}, "
+              f"none {ec['no_ground_truth_episodes']}  "
+              f"({ec['combined_coverage_pct']}%)")
+        print(f"  solo episodes     {a['speakers']['solo_episodes']} "
+              f"({a['speakers']['solo_pct']}%)   {a['speakers']['distribution']}")
+        print(f"  boilerplate       lines in >= {a.get('boilerplate_threshold_episodes')} "
+              f"episodes count; {sum(1 for r in top_repeated if r['show'] == show and r['over_threshold'])} "
+              f"of the top 60 qualify")
+        for k, v in a["candidate_chunk_sizes_words"].items():
+            print(f"    {k:<16} median {v.get('median')}  p25 {v.get('p25')}  "
+                  f"p75 {v.get('p75')}  max {v.get('max')}")
+        print()
+
+    print(f"CORPUS  {agg['episodes']} episodes across {len(by_show)} show(s), "
+          f"{agg['total_segments']:,} segments, {agg['total_words']:,} words "
+          f"(~{agg['total_est_tokens']:,} est. tokens)")
+    print(f"        {len(eval_rows):,} eval candidates "
           f"({sum(1 for r in eval_rows if r['tier'] == 'chunk'):,} chunk-level, "
           f"{sum(1 for r in eval_rows if r['tier'] == 'episode'):,} episode-level)")
-    print(f"wrote               {out_json}")
-    print(f"                    {out_eval}")
-    print(f"                    {out_rep}")
+    print(f"        wrote {out_dir}/"
+          "{corpus-measurements.json,eval-candidates.jsonl,repeated-segments.txt}")
     if unreadable:
         print()
         print(f"WARNING: {len(unreadable)} unreadable, first few:")
         for u in unreadable[:5]:
-            print(f"  {u['stem']}: {u['error']}")
+            print(f"  {u['show']}/{u['stem']}: {u['error']}")
 
 
 if __name__ == "__main__":
