@@ -54,8 +54,8 @@ import sys
 import tempfile
 from collections import Counter, defaultdict
 
-DEFAULT_TRANSCRIPTS = "/storage/nas/ai/scriberr/transcripts"
-DEFAULT_AUDIO = "/storage/nas/ai/scriberr/audio"
+DEFAULT_TRANSCRIPTS = "/storage/nas/ai/scriberr/podcasts/transcripts"
+DEFAULT_AUDIO = "/storage/nas/ai/scriberr/podcasts/audio"
 DEFAULT_ANALYSIS = "/storage/nas/ai/scriberr/analysis"
 DEFAULT_INDEX = "/storage/nas/ai/scriberr/index/chunks.sqlite"
 
