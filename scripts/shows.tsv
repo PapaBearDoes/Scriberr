@@ -3,9 +3,9 @@
 # feed-update.sh reads this. Adding a show is a row here and nothing else:
 # no code change, no new unit, no new timer.
 #
-# TAB-SEPARATED. Seven fields. Blank lines and #-comments are ignored.
-# The literal string $HOME is expanded by the script, so paths stay portable
-# and this file carries no username.
+# TAB-SEPARATED. Seven required fields plus one optional eighth. Blank lines
+# and #-comments are ignored. The literal string $HOME is expanded by the
+# script, so paths stay portable and this file carries no username.
 #
 #   slug         short id, used only in log lines
 #   feed         RSS feed URL, passed straight to yt-dlp
@@ -14,6 +14,24 @@
 #   ledger       bulk-transcribe.sh resume ledger: mp3 filename -> job UUID
 #   outdir       where export-transcripts.sh writes .json and .txt
 #   profile_id   Scriberr transcription profile applied to THIS show's jobs
+#   ytflags      OPTIONAL. Extra yt-dlp flags, space separated.
+#
+# WHY THE EIGHTH FIELD EXISTS -- yt-dlp PICKS AN EXTRACTOR BY URL AND SOME OF
+# THEM SILENTLY RETURN NOTHING. Art19 (`https://rss.art19.com/...`) has a
+# dedicated `Art19Show` extractor that reports `Downloading 0 items` on a plain
+# RSS feed, with no error and exit 0. Captivate has no dedicated extractor, so
+# it falls through to `generic`, which parses the enclosures and works. Force
+# the fallback with `--use-extractors generic` (or `--force-generic-extractor`
+# on older builds; both work on yt-dlp 2026.07.04). If a new show pulls zero
+# episodes and the run still reports errors=0, THIS is the first thing to check:
+#     curl -sL "<FEED>" | grep -c "<enclosure"
+# A non-zero count with a zero-item playlist means the extractor, not the feed.
+#
+# `--playlist-items 1:300` also belongs here when a back catalogue is not worth
+# its GPU time. Feeds are newest-first, so that takes the most recent 300.
+#
+# KEEP THE LEDGER OUT OF audio_dir. Clearing tens of GB of audio someday should
+# not take the resume record with it.
 #
 # WHY EVERY PATH IS SPELLED OUT INSTEAD OF DERIVED FROM THE SLUG:
 #   Do This NOT That already has 634 episodes recorded in a ledger at
@@ -34,6 +52,6 @@
 #   than a two-host show. This column is why the CLI watcher was rejected --
 #   it applies one server-wide default profile to everything it uploads.
 #
-#slug	feed	audio_dir	archive	ledger	outdir	profile_id
+#slug	feed	audio_dir	archive	ledger	outdir	profile_id	ytflags
 dtnt	https://feeds.captivate.fm/do-this-not-that/	$HOME/podcasts/DoThisNotThat	$HOME/podcasts/DoThisNotThat/.archive-dtnt.txt	$HOME/podcasts/DoThisNotThat/.transcribed.tsv	/storage/nas/ai/scriberr/transcripts/DoThisNotThat	56483c7a-76f1-41ea-aa50-03afcf0fd781
-martech	https://rss.art19.com/martech-podcast	$HOME/podcasts/MarTech	$HOME/podcasts/MarTech/.archive-martech.txt	$HOME/podcasts/MarTech/.transcribed.tsv	/storage/nas/ai/scriberr/transcripts/MarTech	56483c7a-76f1-41ea-aa50-03afcf0fd781
+martech	https://rss.art19.com/martech-podcast	$HOME/podcasts/MarTech	$HOME/podcasts/MarTech/.archive-martech.txt	$HOME/podcasts/MarTech/.transcribed-martech.tsv	/storage/nas/ai/scriberr/transcripts/MarTech	56483c7a-76f1-41ea-aa50-03afcf0fd781	--use-extractors generic
