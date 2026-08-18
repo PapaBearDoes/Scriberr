@@ -43,8 +43,8 @@ set -uo pipefail
 
 BASE="${SCRIBERR_URL:-http://localhost:8080}/api/v1"
 PROFILE_ID="${PROFILE_ID:-56483c7a-76f1-41ea-aa50-03afcf0fd781}"
-AUDIO_DIR="${1:-$HOME/podcasts/DoThisNotThat}"
-LEDGER="${LEDGER:-$HOME/podcasts/.transcribed.tsv}"
+AUDIO_DIR="${1:-/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat}"
+LEDGER="${LEDGER:-/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv}"
 LIMIT="${LIMIT:-0}"
 POLL="${POLL:-15}"
 
