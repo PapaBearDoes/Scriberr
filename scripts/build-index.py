@@ -324,7 +324,7 @@ def query_terms(text, use_stopwords, min_len):
     return toks[:60]
 
 
-def fts_query(text, use_stopwords=True, min_len=3):
+def fts_query(text, use_stopwords=False, min_len=2):
     """
     Free text -> a safe FTS5 MATCH expression.
 
@@ -339,7 +339,7 @@ def fts_query(text, use_stopwords=True, min_len=3):
     return " OR ".join('"' + t.replace('"', "") + '"' for t in toks)
 
 
-def search(db, query, k, use_stopwords=True, min_len=3):
+def search(db, query, k, use_stopwords=False, min_len=2):
     expr = fts_query(query, use_stopwords, min_len)
     if not expr:
         return []
@@ -351,21 +351,46 @@ def search(db, query, k, use_stopwords=True, min_len=3):
 
 # ------------------------------------------------------------------ evaluation
 
-def target_text(db, row):
-    """The chunk text at the eval row's known-correct location. For a tier-1 row
-    that is whatever overlaps the timestamp; for tier-2 it is the whole episode,
-    since the target is episode-level."""
+def overlap_fraction(terms, text):
+    """Share of distinct query terms present in a body of text. The whole
+    false-miss diagnostic rests on this: if a returned chunk matches the query
+    as well as the labelled target does, the retriever probably did its job and
+    the LABEL is what is wrong."""
+    ts = set(terms)
+    if not ts:
+        return 0.0, []
+    low = (text or "").lower()
+    present = sorted(t for t in ts if t in low)
+    return len(present) / len(ts), present
+
+
+def target_text(db, row, terms=()):
+    """
+    Returns (all_target_text, best_excerpt) for the eval row's known-correct
+    location.
+
+    For tier-1 that is whatever overlaps the timestamp. For tier-2 the target is
+    the whole episode, so the excerpt is the single chunk with the most query
+    term overlap -- NOT the first chunk. An earlier version returned the first
+    400 characters, which meant every tier-2 excerpt printed the episode intro
+    and looked like evidence of a vocabulary problem that was not there.
+    """
     if row["tier"] == "episode":
-        cur = db.execute("SELECT body FROM chunks WHERE stem = ?", (row["stem"],))
+        rows = [r[0] for r in db.execute(
+            "SELECT body FROM chunks WHERE stem = ?", (row["stem"],)).fetchall()]
     else:
         t = row["t_seconds"]
-        cur = db.execute(
+        rows = [r[0] for r in db.execute(
             "SELECT body FROM chunks WHERE stem = ? AND end_s >= ? AND start_s <= ?",
-            (row["stem"], t - HIT_BEFORE, t + HIT_AFTER))
-    return " ".join(r[0] for r in cur.fetchall())
+            (row["stem"], t - HIT_BEFORE, t + HIT_AFTER)).fetchall()]
+    if not rows:
+        return "", ""
+    joined = " ".join(rows)
+    best = max(rows, key=lambda b: overlap_fraction(terms, b)[0]) if terms else rows[0]
+    return joined, best
 
 
-def evaluate(db, eval_rows, ks, use_stopwords=True, min_len=3, collect_misses=False):
+def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2, collect_misses=False):
     maxk = max(ks)
     hits = {k: Counter() for k in ks}
     totals = Counter()
@@ -400,33 +425,56 @@ def evaluate(db, eval_rows, ks, use_stopwords=True, min_len=3, collect_misses=Fa
                     hits[k][tier] += 1
             if rank <= 5:
                 by_year[year]["hit"] += 1
-        elif collect_misses:
-            # THE DIAGNOSTIC THAT DECIDES WHETHER EMBEDDINGS ARE WORTH BUILDING.
-            # Count how many of the terms actually searched on appear in the
-            # known-correct passage. Near-zero overlap means the publisher and
-            # the transcript use different words for the same thing, which is
-            # exactly what dense retrieval fixes -- real headroom. High overlap
-            # that still missed is a RANKING failure, which BM25 tuning or a
-            # reranker addresses far more cheaply than a second system.
+
+        if collect_misses and (rank is None or rank > 5):
+            # WHY THIS EXISTS. Inspecting misses by hand on 17 Aug showed that
+            # many are not failures: the show covers the same tactics across
+            # years, so BM25 returns an excellent passage from a DIFFERENT
+            # episode than the publisher happened to label. For the stated goal
+            # -- deep context for a marketing idea -- that is a correct answer
+            # scored as a miss.
+            #
+            # Three buckets, and they want different responses:
+            #   zero overlap with the target      vocabulary mismatch, the only
+            #                                     case dense retrieval uniquely
+            #                                     fixes
+            #   result matches as well as target  LIKELY FALSE MISS, the label
+            #                                     is wrong, nothing to fix
+            #   high overlap, still ranked low    ranking failure, a reranker or
+            #                                     bm25 tuning is far cheaper
             terms = query_terms(row["publisher_description"], use_stopwords, min_len)
-            tgt = target_text(db, row).lower()
-            present = [t for t in set(terms) if t in tgt]
-            frac = round(len(present) / len(set(terms)), 3) if terms else 0.0
+            tgt_all, tgt_best = target_text(db, row, terms)
+            tgt_frac, present = overlap_fraction(terms, tgt_all)
+
+            best_res_frac, best_res = 0.0, None
+            for r in results[:5]:
+                f, _ = overlap_fraction(terms, r[4])
+                if f > best_res_frac:
+                    best_res_frac, best_res = f, r
+
+            likely_false = bool(terms) and best_res_frac > 0 and best_res_frac >= tgt_frac
             overlap_hist[min(len(present), 10)] += 1
             top = results[0] if results else None
             misses.append({
                 "tier": tier,
+                "rank": rank,
+                "missed_at_5": True,
+                "missed_at_10": rank is None,
+                "likely_false_miss": likely_false,
                 "stem": row["stem"],
                 "upload_date": row.get("upload_date"),
                 "t_seconds": row.get("t_seconds"),
                 "query": row["publisher_description"],
+                "n_terms": len(set(terms)),
                 "terms_searched": terms,
-                "terms_present_in_target": sorted(present),
-                "overlap_fraction": frac,
-                "target_found": bool(tgt.strip()),
-                "target_excerpt": tgt[:400],
+                "terms_present_in_target": present,
+                "target_overlap_fraction": round(tgt_frac, 3),
+                "best_result_overlap_fraction": round(best_res_frac, 3),
+                "target_found": bool(tgt_all.strip()),
+                "target_excerpt": tgt_best[:400],
                 "top_result_stem": top[0] if top else None,
-                "top_result_excerpt": (top[4][:300] if top else None),
+                "best_result_stem": best_res[0] if best_res else None,
+                "best_result_excerpt": (best_res[4][:400] if best_res else None),
             })
 
     out = {"totals": dict(totals), "recall": {}, "mrr": {}, "by_year": {}}
@@ -442,13 +490,25 @@ def evaluate(db, eval_rows, ks, use_stopwords=True, min_len=3, collect_misses=Fa
         out["by_year"][y] = {"n": d["n"], "recall@5": round(d["hit"] / d["n"], 4) if d["n"] else 0}
     if collect_misses:
         n_miss = len(misses) or 1
+        total_q = sum(totals.values()) or 1
+        false_misses = [m for m in misses if m["likely_false_miss"]]
         out["miss_analysis"] = {
-            "n_misses": len(misses),
+            "n_misses_at_5": len(misses),
+            "n_misses_at_10": sum(1 for m in misses if m["missed_at_10"]),
+            "n_ranked_6_to_10": sum(1 for m in misses if not m["missed_at_10"]),
             "overlap_histogram_terms_present": dict(sorted(overlap_hist.items())),
             "zero_overlap_pct": round(100.0 * sum(1 for m in misses if not m["terms_present_in_target"]) / n_miss, 1),
-            "high_overlap_pct": round(100.0 * sum(1 for m in misses if m["overlap_fraction"] >= 0.6) / n_miss, 1),
+            "high_overlap_pct": round(100.0 * sum(1 for m in misses if m["target_overlap_fraction"] >= 0.6) / n_miss, 1),
             "target_missing_from_index_pct": round(100.0 * sum(1 for m in misses if not m["target_found"]) / n_miss, 1),
-            "median_overlap_fraction": round(statistics.median([m["overlap_fraction"] for m in misses]), 3) if misses else 0,
+            "median_target_overlap_fraction": round(statistics.median([m["target_overlap_fraction"] for m in misses]), 3) if misses else 0,
+            "likely_false_miss_pct": round(100.0 * len(false_misses) / n_miss, 1),
+            # PROXY, NOT GROUND TRUTH. "A returned chunk matched the query at
+            # least as well as the labelled target did" is evidence the label is
+            # wrong, not proof. Treat this as an upper bound on real quality and
+            # the measured recall as the lower bound; the truth is between them.
+            "adjusted_recall_at_5_upper_bound": round(
+                out["recall"][5].get("all", 0) + len(false_misses) / total_q, 4),
+            "vague_queries_pct": round(100.0 * sum(1 for m in misses if m["n_terms"] <= 4) / n_miss, 1),
         }
     return out, misses
 
@@ -505,9 +565,12 @@ def main():
                          "chunking fixed at the winner of --sweep")
     ap.add_argument("--dump-misses", nargs="?", const="AUTO", default=None,
                     help="write every miss with its term-overlap diagnostic")
-    ap.add_argument("--no-stopwords", dest="stopwords", action="store_false",
-                    help="search on every token, the original baseline")
-    ap.add_argument("--min-term-len", type=int, default=3)
+    ap.add_argument("--stopwords", dest="stopwords", action="store_true",
+                    help="drop function words from the query; MEASURED SLIGHTLY "
+                         "WORSE on 17 Aug, off by default")
+    ap.add_argument("--min-term-len", type=int, default=2,
+                    help="2 is the measured best; 3 silently discards 'ai', "
+                         "4 also loses 'seo', 'cta', 'roi'")
     ap.add_argument("--query", help="search the built index and print results, no scoring")
     ap.add_argument("--mode", default="moments", choices=["moments", "window"])
     ap.add_argument("--target-words", type=int, default=250)
@@ -621,15 +684,25 @@ def main():
             for m in all_misses:
                 fh.write(json.dumps(m, ensure_ascii=False) + "\n")
         print()
-        print(f"MISS ANALYSIS  (configuration 1 of {len(configs)}, {ma.get('n_misses')} misses)")
-        print(f"  zero term overlap with the target   {ma.get('zero_overlap_pct')}%"
-              "   <- vocabulary mismatch, embeddings would help")
-        print(f"  60%+ term overlap and still missed  {ma.get('high_overlap_pct')}%"
+        print(f"MISS ANALYSIS  (config 1 of {len(configs)}, {ma.get('n_misses_at_5')} misses at k=5)")
+        print(f"  of those, ranked 6-10                {ma.get('n_ranked_6_to_10')}"
+              f"   (never in top 10: {ma.get('n_misses_at_10')})")
+        print(f"  LIKELY FALSE MISSES                  {ma.get('likely_false_miss_pct')}%"
+              "   <- a returned chunk matched as well as the label did")
+        print(f"  zero term overlap with the target    {ma.get('zero_overlap_pct')}%"
+              "   <- vocabulary mismatch, the only case embeddings uniquely fix")
+        print(f"  60%+ overlap and still missed        {ma.get('high_overlap_pct')}%"
               "   <- ranking failure, a reranker is cheaper")
-        print(f"  target absent from the index        {ma.get('target_missing_from_index_pct')}%"
-              "   <- boilerplate stripping ate it, or bad timestamp")
-        print(f"  median overlap fraction             {ma.get('median_overlap_fraction')}")
-        print(f"  terms-present histogram             {ma.get('overlap_histogram_terms_present')}")
+        print(f"  target absent from the index         {ma.get('target_missing_from_index_pct')}%"
+              "   <- boilerplate stripping ate it, or a bad timestamp")
+        print(f"  vague queries (<=4 terms)            {ma.get('vague_queries_pct')}%"
+              "   <- ungradeable, e.g. 'mistakes to avoid on this platform'")
+        print(f"  median target overlap fraction       {ma.get('median_target_overlap_fraction')}")
+        print()
+        print(f"  recall@5 measured                    {results[0]['scores']['recall'][5].get('all', 0)}"
+              "   <- lower bound")
+        print(f"  recall@5 adjusted for false misses    {ma.get('adjusted_recall_at_5_upper_bound')}"
+              "   <- UPPER bound, proxy not ground truth")
         print(f"  wrote {path}")
 
     print()
