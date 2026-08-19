@@ -34,6 +34,7 @@
 #   SCRIBERR_URL default http://localhost:8080
 #   PROFILE_ID   default is the "Podcast Parakeet + Sortformer" profile
 #   LEDGER       default is Do This NOT That's ledger on the NAS
+#   ORDER        desc (default) = newest episodes first; asc = oldest first
 #   LIMIT        0 = no limit
 #   POLL         seconds between status checks, default 15
 #
@@ -77,13 +78,35 @@ echo
 done_count=0
 ok=0; failed=0; skipped=0
 
-for f in "$AUDIO_DIR"/*.mp3; do
+# NEWEST FIRST BY DEFAULT. The glob sorts ascending and filenames begin with the
+# upload date, so the old behaviour transcribed a show's oldest episodes first.
+# On a back catalogue that is the wrong end: MarTech's 2018 material predates
+# GA4, iOS ATT and LLMs, and 65 hours of GPU spent reaching 2026 from 2018 buys
+# the least useful content first.
+#
+# Descending makes an interrupted or abandoned backfill USEFUL rather than
+# worthless -- every hour adds the most valuable episodes available, and you can
+# stop at any point. Combine with LIMIT to take just the recent N.
+# ORDER=asc restores the old behaviour.
+files=("$AUDIO_DIR"/*.mp3)
+if [ ! -e "${files[0]}" ]; then
   # An empty audio directory is a LEGITIMATE state, not an error: a show added
   # to shows.tsv has one until its backfill runs. Exiting non-zero here made
   # feed-update.sh mark the whole service failed on every tick, which destroys
   # `systemctl --failed` as a monitoring signal exactly when it is the only one
   # this pipeline has. A MISSING directory still fails, above.
-  [ -e "$f" ] || { echo "no mp3 files yet in $AUDIO_DIR (nothing to do)"; exit 0; }
+  echo "no mp3 files yet in $AUDIO_DIR (nothing to do)"
+  exit 0
+fi
+
+if [ "${ORDER:-desc}" != "asc" ]; then
+  rev=()
+  for ((i=${#files[@]}-1; i>=0; i--)); do rev+=("${files[i]}"); done
+  files=("${rev[@]}")
+fi
+echo "order     ${ORDER:-desc} ($(basename "${files[0]}") first)"
+
+for f in "${files[@]}"; do
   base=$(basename "$f")
 
   # Resume: ledger holds one tab-separated line per finished episode.
