@@ -39,7 +39,7 @@
 #   SHOWS        default <this script's dir>/shows.tsv
 #   SHOW         limit to one slug
 #   DRY          1 = report only
-#   BATCH        max episodes to transcribe PER SHOW PER RUN (default 20).
+#   BATCH        max episodes to transcribe PER SHOW PER RUN (default 35).
 #                Set 0 for no cap. An explicit LIMIT overrides it.
 #   FULL         1 = scan the whole feed instead of stopping at the first
 #                episode already in the archive. Use after a failed download.
@@ -77,10 +77,17 @@ FULL="${FULL:-0}"
 # Wall-clock for a big backfill stretches (~65 h becomes ~86 h), which is a good
 # trade for not blocking everything else.
 #
-# 20 is roughly 30-40 minutes at observed rates. OVERRUNNING THE HOUR IS SAFE --
-# systemd will not start a second instance while one is active and the flock
-# catches hand-runs, so a long tick just means the next one is skipped.
-BATCH="${BATCH:-20}"
+# SIZING, measured 19 Aug: MarTech transcribes at a steady 75 s per episode, so
+# 35 fills ~44 minutes of a 60-minute tick. That keeps the GPU busy while still
+# releasing the lock between ticks, so other shows stay current and transcripts
+# export hourly rather than at the end of a multi-day run.
+#
+# OVERRUNNING THE HOUR IS SAFE -- systemd will not start a second instance while
+# one is active and the flock catches hand-runs, so a long tick just means the
+# next one is skipped. That is why the number only has to be roughly right.
+# Episode length varies by show; re-check against the observed rate before
+# pushing it much higher.
+BATCH="${BATCH:-35}"
 LOCK="${LOCK:-/tmp/scriberr-feed.lock}"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
