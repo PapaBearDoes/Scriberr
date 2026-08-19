@@ -80,6 +80,11 @@ MOMENT_RE = re.compile(r"^\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-\u2013]?\s*(.+)$"
 BULLET_RE = re.compile(r"^[-\u2022*\u2013]\s+(.{25,})$")
 BULLET_HEADER_RE = re.compile(
     r"(main\s+discussion\s+points|discussion\s+points|main\s+points|key\s+takeaways|takeaways)", re.I)
+# Leading episode markers -- "EP. 20- ", "Ep 206 - ", "#4 ". Stripped so a title
+# used as a query does not spend a third of its terms on numbering.
+TITLE_LEAD_RE = re.compile(r"^\s*(?:ep(?:isode)?\.?\s*#?\d+|#\d+)\s*[-:\u2013]*\s*", re.I)
+# Trailing show-branding suffixes on this publisher's titles.
+TITLE_TAIL_RE = re.compile(r"\s*[|l]\s*(jay's scoop|ask us anything).*$", re.I)
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 NORM_RE = re.compile(r"[^a-z0-9 ]+")
 
@@ -147,6 +152,33 @@ def parse_bullets(description):
             continue
         bullets.append(body)
     return bullets, had_header
+
+
+def clean_title(raw):
+    """
+    Episode title -> a usable query string.
+
+    TIER 3 GROUND TRUTH, added 2026-08-19. MarTech produced 1 Best Moment and 0
+    discussion bullets across 1,150 episodes -- Art19 descriptions carry neither
+    format -- leaving 73% of the index by chunk count unmeasurable. Titles are
+    the only human-written per-episode text that show has, and they are
+    genuinely descriptive ("Generating Demand Using Email Prospecting and
+    Outreach"). Weaker than a timestamped moment: terser, episode-level only,
+    and closer to the vague-query category that already accounts for some
+    misses. But free, and it generalises to any publisher who writes nothing.
+
+    THIS IS ONLY SAFE BECAUSE TITLES ARE UNINDEXED. build-index.py puts the
+    title in the chunk header, which is an UNINDEXED column by default.
+    Running with --index-header would put the answer key into the searchable
+    text and make every tier-3 score meaningless -- the same contamination the
+    Best Moments split avoids, in a new place.
+    """
+    t = html.unescape(raw or "")
+    t = TITLE_LEAD_RE.sub("", t)
+    t = TITLE_TAIL_RE.sub("", t)
+    t = re.sub(r"[=<>|*_~#]+", " ", t)          # decorative runs: "===>", "<==="
+    t = re.sub(r"\s+", " ", t).strip(" -:–")
+    return t
 
 
 def words(text):
@@ -298,6 +330,8 @@ def measure_episode(show, stem, tpath, spath):
     speakers = sorted({s.get("speaker") for s in segments if s.get("speaker")})
     moments, had_header = parse_moments(side.get("description", ""))
     bullets, had_bullet_header = parse_bullets(side.get("description", ""))
+    raw_title = tj.get("title") or side.get("title") or ""
+    title_query = clean_title(raw_title)
     duration = side.get("duration") or (segments[-1].get("end") if segments else 0)
 
     total_words = sum(seg_words)
@@ -333,7 +367,12 @@ def measure_episode(show, stem, tpath, spath):
         "n_moments": len(moments),
         "bullet_header": had_bullet_header,
         "n_bullets": len(bullets),
-        "eval_tier": "chunk" if moments else ("episode" if bullets else "none"),
+        "title_query": title_query,
+        "n_title_words": words(title_query),
+        # A title under 4 words is too vague to grade -- "Ask Us Anything"
+        # retrieves nothing meaningful and would only add noise to the score.
+        "eval_tier": ("chunk" if moments else "episode" if bullets
+                      else "title" if words(title_query) >= 4 else "none"),
         "moment_gaps_s": summarize(gaps),
         "promo_segment_hits": promo_hits,
         "chunks": {
@@ -362,6 +401,7 @@ def show_aggregate(episodes):
     with_moments = [e for e in episodes if e["n_moments"] > 0]
     with_bullets = [e for e in episodes if e["n_bullets"] > 0]
     tier2 = [e for e in episodes if e["eval_tier"] == "episode"]
+    tier3 = [e for e in episodes if e["eval_tier"] == "title"]
     no_eval = [e for e in episodes if e["eval_tier"] == "none"]
     solo = [e for e in episodes if e["n_speakers"] <= 1]
     all_gaps = [e["moment_gaps_s"]["median"] for e in episodes if e["moment_gaps_s"]["n"]]
@@ -395,6 +435,7 @@ def show_aggregate(episodes):
         "eval_coverage": {
             "tier1_chunk_level_episodes": len(with_moments),
             "tier2_episode_level_episodes": len(tier2),
+            "tier3_title_level_episodes": len(tier3),
             "no_ground_truth_episodes": len(no_eval),
             "no_ground_truth_stems": [e["stem"] for e in no_eval][:40],
             "combined_coverage_pct": round(100.0 * (len(episodes) - len(no_eval)) / n, 1),
@@ -504,6 +545,21 @@ def main():
                         "transcript_window": None,
                     })
 
+            # Tier 3, last resort: the episode title as the query. Only where
+            # the publisher supplied neither timestamps nor bullets. One row per
+            # episode, so a show measured this way contributes far fewer queries
+            # than one with Best Moments -- that asymmetry is real and should be
+            # read as such rather than corrected for.
+            if ep["eval_tier"] == "title":
+                eval_rows.append({
+                    "tier": "title", "show": show, "stem": stem,
+                    "episode_number": ep["episode_number"],
+                    "upload_date": ep["upload_date"],
+                    "t_seconds": None,
+                    "publisher_description": ep["title_query"],
+                    "transcript_window": None,
+                })
+
             if i % 100 == 0:
                 print(f"    ... {i}/{len(stems)}", file=sys.stderr)
 
@@ -573,6 +629,7 @@ def main():
               f"median gap {b['median_gap_between_moments_s'].get('median')} s")
         print(f"  eval coverage     chunk {ec['tier1_chunk_level_episodes']}, "
               f"episode {ec['tier2_episode_level_episodes']}, "
+              f"title {ec['tier3_title_level_episodes']}, "
               f"none {ec['no_ground_truth_episodes']}  "
               f"({ec['combined_coverage_pct']}%)")
         print(f"  solo episodes     {a['speakers']['solo_episodes']} "
@@ -590,7 +647,8 @@ def main():
           f"(~{agg['total_est_tokens']:,} est. tokens)")
     print(f"        {len(eval_rows):,} eval candidates "
           f"({sum(1 for r in eval_rows if r['tier'] == 'chunk'):,} chunk-level, "
-          f"{sum(1 for r in eval_rows if r['tier'] == 'episode'):,} episode-level)")
+          f"{sum(1 for r in eval_rows if r['tier'] == 'episode'):,} episode-level, "
+          f"{sum(1 for r in eval_rows if r['tier'] == 'title'):,} title-level)")
     print(f"        wrote {out_dir}/"
           "{corpus-measurements.json,eval-candidates.jsonl,repeated-segments.txt}")
     if unreadable:
