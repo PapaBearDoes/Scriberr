@@ -39,6 +39,8 @@
 #   SHOWS        default <this script's dir>/shows.tsv
 #   SHOW         limit to one slug
 #   DRY          1 = report only
+#   BATCH        max episodes to transcribe PER SHOW PER RUN (default 20).
+#                Set 0 for no cap. An explicit LIMIT overrides it.
 #   FULL         1 = scan the whole feed instead of stopping at the first
 #                episode already in the archive. Use after a failed download.
 #
@@ -62,6 +64,23 @@ BASE="${SCRIBERR_URL:-http://localhost:8080}"
 SHOW="${SHOW:-}"
 DRY="${DRY:-0}"
 FULL="${FULL:-0}"
+# BOUND EACH TICK. bulk-transcribe.sh with no cap processes EVERY untranscribed
+# episode before returning, which on a fresh back catalogue means one run
+# monopolising the pipeline for days. Observed 19 Aug: MarTech's backfill would
+# have held the lock for ~60 hours, during which (a) every hourly tick for every
+# OTHER show logs "another run holds the lock" and does nothing, and (b) no
+# export runs, so completed transcripts sit in scriberr.db unwritten to the NAS
+# and outside the Kopia snapshot.
+#
+# A cap fixes all three: other shows keep flowing, transcripts land
+# incrementally, and a power cut costs one batch instead of a day's work.
+# Wall-clock for a big backfill stretches (~65 h becomes ~86 h), which is a good
+# trade for not blocking everything else.
+#
+# 20 is roughly 30-40 minutes at observed rates. OVERRUNNING THE HOUR IS SAFE --
+# systemd will not start a second instance while one is active and the flock
+# catches hand-runs, so a long tick just means the next one is skipped.
+BATCH="${BATCH:-20}"
 LOCK="${LOCK:-/tmp/scriberr-feed.lock}"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -153,6 +172,7 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id ytf
     log "    outdir   $outdir"
     log "    profile  $profile_id"
     log "    ytflags  ${ytflags_extra:-<none>}"
+    log "    batch    ${LIMIT:-$BATCH} episode(s) per run"
     [ -s "$archive" ] || log "    NOTE: empty archive -- this is a BACKFILL, run it with FULL=1"
     continue
   fi
@@ -226,7 +246,8 @@ while IFS=$'\t' read -r slug feed audio_dir archive ledger outdir profile_id ytf
   #    broken skip check went untested on 17 Aug 2026.
   #    Cost of running it every tick: one awk call per episode and two profile
   #    curls, then "already-done N". Cheap.
-  PROFILE_ID="$profile_id" LEDGER="$ledger" "$HERE/bulk-transcribe.sh" "$audio_dir" 9>&- \
+  PROFILE_ID="$profile_id" LEDGER="$ledger" LIMIT="${LIMIT:-$BATCH}" \
+    "$HERE/bulk-transcribe.sh" "$audio_dir" 9>&- \
     || { log "    bulk-transcribe.sh exited $?"; had_error=1; }
 
   # 3. Export. Also unconditional: a run that transcribed successfully and then
