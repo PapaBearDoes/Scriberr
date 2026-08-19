@@ -53,7 +53,51 @@ import sqlite3
 import sys
 
 DEFAULT_INDEX = "/storage/nas/ai/scriberr/index/chunks.sqlite"
+DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def rerank(rows, query, model_name, fp16):
+    """
+    Reorder BM25 candidates with a cross-encoder. Measured 19 Aug on 500 held-out
+    queries: recall@1 0.506 -> 0.628, recall@5 0.736 -> 0.804, MRR 0.606 -> 0.708.
+    The gain concentrates at the TOP of the list, which is what matters for a
+    tool that hands six passages to a model.
+
+    Scores `body` rather than `text_for_model`, matching how it was evaluated --
+    text_for_model carries the header, and the header carries the episode title.
+
+    OFF BY DEFAULT. Without it this tool has no dependencies and answers in
+    milliseconds; with it, a cold start loads ~2.3 GB of model.
+    """
+    try:
+        from sentence_transformers import CrossEncoder
+    except ImportError:
+        print("--rerank needs sentence-transformers:\n"
+              "  ~/venvs/rerank/bin/pip install sentence-transformers\n"
+              "  then run this script with ~/venvs/rerank/bin/python",
+              file=sys.stderr)
+        return rows
+    device = "cpu"
+    kwargs = {}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = "cuda"
+            if fp16:
+                kwargs = {"model_kwargs": {"torch_dtype": torch.float16}}
+    except ImportError:
+        pass
+    print(f"reranking {len(rows)} candidates with {model_name} on {device} ...",
+          file=sys.stderr)
+    try:
+        model = CrossEncoder(model_name, device=device, max_length=512, **kwargs)
+    except Exception as exc:
+        print(f"  fp16 unavailable ({type(exc).__name__}), using fp32", file=sys.stderr)
+        model = CrossEncoder(model_name, device=device, max_length=512)
+    scores = model.predict([(query, r[8]) for r in rows], batch_size=16,
+                           show_progress_bar=False)
+    return [rows[j] for j in sorted(range(len(rows)), key=lambda j: -scores[j])]
 
 
 def fts_expr(text, min_len=2):
@@ -89,6 +133,14 @@ def main():
     ap.add_argument("--until", help="latest upload year or YYYYMMDD")
     ap.add_argument("--format", choices=["md", "text", "json"], default="md")
     ap.add_argument("--min-term-len", type=int, default=2)
+    ap.add_argument("--rerank", action="store_true",
+                    help="reorder BM25 candidates with a cross-encoder (needs the venv)")
+    ap.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL)
+    ap.add_argument("--rerank-depth", type=int, default=50,
+                    help="candidates to rerank; 100 raises the ceiling ~2 points "
+                         "and doubles latency")
+    ap.add_argument("--no-fp16", dest="fp16", action="store_false",
+                    help="full precision; fp16 halved latency with identical results")
     args = ap.parse_args()
 
     # `nargs="*"` rather than "+" so a bare run prints the full help instead of
@@ -133,7 +185,7 @@ def main():
 
     def fetch(show_filter, limit):
         sql = ("SELECT text_for_model, header, stem, upload_date, start_s, end_s,"
-               " bm25(chunks) AS score, show FROM chunks WHERE chunks MATCH ?")
+               " bm25(chunks) AS score, show, body FROM chunks WHERE chunks MATCH ?")
         p = [expr]
         if show_filter:
             sql += " AND show IN (" + ",".join("?" * len(show_filter)) + ")"
@@ -147,6 +199,11 @@ def main():
         sql += " ORDER BY score LIMIT ?"
         p.append(limit)
         return db.execute(sql, p).fetchall()
+
+    # With --rerank the candidate pool is the reranker's depth, since the
+    # cross-encoder reorders everything it is handed. Without it, over-fetch
+    # enough that the caps still have k passages to choose from.
+    pool = args.rerank_depth if args.rerank else max(args.k * 8, 50)
 
     try:
         if args.max_per_show:
@@ -163,15 +220,21 @@ def main():
                                 db.execute("SELECT DISTINCT show FROM chunks").fetchall()]
             rows = []
             for s in targets:
-                rows.extend(fetch([s], max(args.max_per_show * 6, 20)))
+                rows.extend(fetch([s], pool if args.rerank
+                                  else max(args.max_per_show * 6, 20)))
             rows.sort(key=lambda r: r[6])       # bm25: lower is better
         else:
-            # Over-fetch so the per-episode cap still has k passages to pick from.
-            rows = fetch(shows, max(args.k * 8, 50))
+            rows = fetch(shows, pool)
     except sqlite3.OperationalError as exc:
         sys.exit(f"ABORT: query failed: {exc}")
     finally:
         db.close()
+
+    # RERANK BEFORE CAPPING. The caps take from the top of the ordering, so
+    # applying them to BM25 order and reranking the survivors would discard the
+    # passages the cross-encoder would have promoted.
+    if args.rerank and rows:
+        rows = rerank(rows, query, args.rerank_model, args.fp16)
 
     picked, per_ep, per_show = [], {}, {}
     for r in rows:
@@ -209,7 +272,7 @@ def main():
               f"marketing podcasts, and platform advice from an older episode "
               f"may no longer hold.\n")
 
-    for i, (text, header, stem, date, start_s, end_s, score, show) in enumerate(picked, 1):
+    for i, (text, header, stem, date, start_s, end_s, score, show, _b) in enumerate(picked, 1):
         body = text.split("\n", 1)[1] if "\n" in text else text
         if args.format == "md":
             print(f"## {i}. {header}")
