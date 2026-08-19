@@ -3,27 +3,36 @@
 search-corpus.py -- query the built index and print passages ready to paste
 into an AI as context.
 
-This is the USE tool. `build-index.py` builds and scores; it reloads all 635
-episodes and rebuilds the index before it will answer a query, which is fine
-for evaluation and useless for actually asking a question. This opens the
-existing index read-only and answers in milliseconds.
+This is the USE tool. `build-index.py` builds and scores; it reloads the whole
+corpus and rebuilds the index before it will answer a query, which is fine for
+evaluation and useless for actually asking a question. This opens the existing
+index read-only and answers in milliseconds.
 
     python3 scripts/search-corpus.py "subject line tips that still work"
     python3 scripts/search-corpus.py "cold email" -k 8 --since 2025
+    python3 scripts/search-corpus.py "attribution" --show MarTech
+    python3 scripts/search-corpus.py --shows          # what is indexed
     python3 scripts/search-corpus.py "AI prompting" --format json
 
 DEFAULTS AND WHY
   -k 6            enough context to be useful, short enough to paste
   --max-per-episode 2
-                  This show repeats tactics across years, so an unconstrained
+                  These shows repeat tactics across years, so an unconstrained
                   top-6 often returns the same episode several times. Two per
                   episode buys breadth, which is what "deep context for a
                   marketing idea" wants. Pass 0 to disable.
-  --format md     each passage carries its episode title, number, date and
-                  timestamp, because the show is TACTICAL: 2023 platform advice
-                  is often actively wrong now, and an undated passage reads as
-                  current. The date is not decoration, it is the thing that
-                  stops stale tactics being quoted as live ones.
+  --max-per-show 0
+                  OFF by default, unlike the per-episode cap. A passage from
+                  any show is equally valid, so relevance should decide -- use
+                  --show to scope deliberately rather than capping blindly.
+                  But watch it: one show can outnumber another by 4:1 in the
+                  index, and BM25 has no idea that matters. If results start
+                  coming back monotonously from one source, this is the lever.
+  --format md     each passage carries its SHOW, episode title, number, date
+                  and timestamp. These are TACTICAL podcasts: 2018 martech
+                  advice predates GA4, iOS ATT and LLMs, and an undated passage
+                  reads as current. Show and date are not decoration -- they are
+                  what stops stale tactics being quoted as live ones.
 
 DATE FILTERING IS THE MOST USEFUL FLAG HERE. `--since 2025` when you want what
 works now; leave it off when you want to see how a tactic has aged.
@@ -56,13 +65,23 @@ def clock(seconds):
     return f"{s // 60}:{s % 60:02d}"
 
 
+def pretty_date(raw):
+    raw = raw or ""
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}" if len(raw) == 8 else (raw or "undated")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("query", nargs="*", help="what you want to know")
     ap.add_argument("--index", default=DEFAULT_INDEX)
     ap.add_argument("-k", type=int, default=6, help="passages to return")
+    ap.add_argument("--show", default=None,
+                    help="comma-separated show names; default all")
+    ap.add_argument("--shows", action="store_true",
+                    help="list indexed shows with chunk counts and date ranges")
     ap.add_argument("--max-per-episode", type=int, default=2, help="0 disables")
+    ap.add_argument("--max-per-show", type=int, default=0, help="0 disables")
     ap.add_argument("--since", help="earliest upload year or YYYYMMDD")
     ap.add_argument("--until", help="latest upload year or YYYYMMDD")
     ap.add_argument("--format", choices=["md", "text", "json"], default="md")
@@ -72,13 +91,28 @@ def main():
     # `nargs="*"` rather than "+" so a bare run prints the full help instead of
     # `error: the following arguments are required: query`, which is the least
     # useful thing to show someone opening the tool for the first time.
-    if not args.query:
+    if not args.query and not args.shows:
         ap.print_help()
         return
 
     if not os.path.exists(args.index):
         sys.exit(f"ABORT: no index at {args.index}\n"
                  f"       build it with: python3 scripts/build-index.py")
+
+    if args.shows:
+        db = sqlite3.connect(f"file:{args.index}?mode=ro", uri=True)
+        rows = db.execute(
+            "SELECT show, COUNT(*), COUNT(DISTINCT stem),"
+            " MIN(upload_date), MAX(upload_date)"
+            " FROM chunks GROUP BY show ORDER BY show").fetchall()
+        db.close()
+        print(f"{'show':<20} {'chunks':>8} {'episodes':>9}  dates")
+        for show, chunks, eps, lo_d, hi_d in rows:
+            print(f"{show:<20} {chunks:>8} {eps:>9}  "
+                  f"{pretty_date(lo_d)} to {pretty_date(hi_d)}")
+        return
+
+    shows = [s.strip() for s in args.show.split(",")] if args.show else None
 
     query = " ".join(args.query)
     expr = fts_expr(query, args.min_term_len)
@@ -94,15 +128,18 @@ def main():
 
     db = sqlite3.connect(f"file:{args.index}?mode=ro", uri=True)
     sql = ("SELECT text_for_model, header, stem, upload_date, start_s, end_s,"
-           " bm25(chunks) AS score FROM chunks WHERE chunks MATCH ?")
+           " bm25(chunks) AS score, show FROM chunks WHERE chunks MATCH ?")
     params = [expr]
+    if shows:
+        sql += " AND show IN (" + ",".join("?" * len(shows)) + ")"
+        params.extend(shows)
     if lo:
         sql += " AND upload_date >= ?"
         params.append(lo)
     if hi:
         sql += " AND upload_date <= ?"
         params.append(hi)
-    # Over-fetch so the per-episode cap still has k passages to choose from.
+    # Over-fetch so the caps still have k passages to choose from.
     sql += " ORDER BY score LIMIT ?"
     params.append(max(args.k * 8, 50))
 
@@ -113,25 +150,30 @@ def main():
     finally:
         db.close()
 
-    picked, per_ep = [], {}
+    picked, per_ep, per_show = [], {}, {}
     for r in rows:
-        stem = r[2]
+        stem, show = r[2], r[7]
         if args.max_per_episode and per_ep.get(stem, 0) >= args.max_per_episode:
             continue
+        if args.max_per_show and per_show.get(show, 0) >= args.max_per_show:
+            continue
         per_ep[stem] = per_ep.get(stem, 0) + 1
+        per_show[show] = per_show.get(show, 0) + 1
         picked.append(r)
         if len(picked) >= args.k:
             break
 
     if not picked:
         print(f"Nothing matched \"{query}\""
-              + (f" in that date range." if (lo or hi) else "."))
-        print("Try fewer or more common words, or widen the dates.")
+              + (f" in {', '.join(shows)}" if shows else "")
+              + (" in that date range." if (lo or hi) else "."))
+        print("Try fewer or more common words, widen the dates, "
+              "or drop --show. `--shows` lists what is indexed.")
         return
 
     if args.format == "json":
         print(json.dumps([{
-            "header": r[1], "stem": r[2], "upload_date": r[3],
+            "show": r[7], "header": r[1], "stem": r[2], "upload_date": r[3],
             "start_s": r[4], "end_s": r[5], "score": r[6],
             "text": r[0],
         } for r in picked], indent=2, ensure_ascii=False))
@@ -139,11 +181,12 @@ def main():
 
     if args.format == "md":
         print(f"# Podcast context for: {query}\n")
-        print(f"{len(picked)} passages from *Do This, NOT That*, retrieved by "
-              f"keyword relevance. **Dates matter** -- this show is tactical, "
-              f"and platform advice from an older episode may no longer hold.\n")
+        print(f"{len(picked)} passages retrieved by keyword relevance from "
+              f"{len(per_show)} show(s). **Dates matter** -- these are tactical "
+              f"marketing podcasts, and platform advice from an older episode "
+              f"may no longer hold.\n")
 
-    for i, (text, header, stem, date, start_s, end_s, score) in enumerate(picked, 1):
+    for i, (text, header, stem, date, start_s, end_s, score, show) in enumerate(picked, 1):
         body = text.split("\n", 1)[1] if "\n" in text else text
         if args.format == "md":
             print(f"## {i}. {header}")
@@ -155,10 +198,11 @@ def main():
             print()
 
     if args.format != "json":
-        years = sorted({(d or "")[:4] for _, _, _, d, _, _, _ in picked if d})
+        years = sorted({(r[3] or "")[:4] for r in picked if r[3]})
+        counts = ", ".join(f"{s} {n}" for s, n in sorted(per_show.items()))
         print(f"---\n{len(picked)} passages, {len(per_ep)} episodes, "
-              f"{'-'.join([years[0], years[-1]]) if years else 'undated'}."
-              f"  Query: {query}")
+              f"{'-'.join([years[0], years[-1]]) if years else 'undated'} "
+              f"({counts}).  Query: {query}")
 
 
 if __name__ == "__main__":
