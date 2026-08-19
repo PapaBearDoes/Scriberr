@@ -25,9 +25,12 @@ DEFAULTS AND WHY
                   OFF by default, unlike the per-episode cap. A passage from
                   any show is equally valid, so relevance should decide -- use
                   --show to scope deliberately rather than capping blindly.
-                  But watch it: one show can outnumber another by 4:1 in the
+                  But watch it: one show can outnumber another 50:1 in the
                   index, and BM25 has no idea that matters. If results start
                   coming back monotonously from one source, this is the lever.
+                  Setting it switches to one query PER SHOW merged by score,
+                  because a cap applied to a single global result set cannot
+                  diversify -- it can only return fewer passages.
   --format md     each passage carries its SHOW, episode title, number, date
                   and timestamp. These are TACTICAL podcasts: 2018 martech
                   advice predates GA4, iOS ATT and LLMs, and an undated passage
@@ -127,24 +130,44 @@ def main():
     lo, hi = bound(args.since, False), bound(args.until, True)
 
     db = sqlite3.connect(f"file:{args.index}?mode=ro", uri=True)
-    sql = ("SELECT text_for_model, header, stem, upload_date, start_s, end_s,"
-           " bm25(chunks) AS score, show FROM chunks WHERE chunks MATCH ?")
-    params = [expr]
-    if shows:
-        sql += " AND show IN (" + ",".join("?" * len(shows)) + ")"
-        params.extend(shows)
-    if lo:
-        sql += " AND upload_date >= ?"
-        params.append(lo)
-    if hi:
-        sql += " AND upload_date <= ?"
-        params.append(hi)
-    # Over-fetch so the caps still have k passages to choose from.
-    sql += " ORDER BY score LIMIT ?"
-    params.append(max(args.k * 8, 50))
+
+    def fetch(show_filter, limit):
+        sql = ("SELECT text_for_model, header, stem, upload_date, start_s, end_s,"
+               " bm25(chunks) AS score, show FROM chunks WHERE chunks MATCH ?")
+        p = [expr]
+        if show_filter:
+            sql += " AND show IN (" + ",".join("?" * len(show_filter)) + ")"
+            p.extend(show_filter)
+        if lo:
+            sql += " AND upload_date >= ?"
+            p.append(lo)
+        if hi:
+            sql += " AND upload_date <= ?"
+            p.append(hi)
+        sql += " ORDER BY score LIMIT ?"
+        p.append(limit)
+        return db.execute(sql, p).fetchall()
 
     try:
-        rows = db.execute(sql, params).fetchall()
+        if args.max_per_show:
+            # PER-SHOW QUERIES, THEN MERGE BY SCORE.
+            #
+            # A post-filter over one global result set CANNOT diversify -- it can
+            # only drop results. With 5,585 DoThisNotThat chunks against 108 for
+            # MarTech, the smaller show never reaches a global top-50 at all, so
+            # capping the larger one just returned fewer passages (observed
+            # 19 Aug: `--max-per-show 3 -k 6` gave 3, all from one show).
+            # Querying each show separately gives every show a fair chance to
+            # contribute its best passages; merging on bm25 keeps ranking honest.
+            targets = shows or [r[0] for r in
+                                db.execute("SELECT DISTINCT show FROM chunks").fetchall()]
+            rows = []
+            for s in targets:
+                rows.extend(fetch([s], max(args.max_per_show * 6, 20)))
+            rows.sort(key=lambda r: r[6])       # bm25: lower is better
+        else:
+            # Over-fetch so the per-episode cap still has k passages to pick from.
+            rows = fetch(shows, max(args.k * 8, 50))
     except sqlite3.OperationalError as exc:
         sys.exit(f"ABORT: query failed: {exc}")
     finally:
