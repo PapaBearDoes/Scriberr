@@ -448,7 +448,10 @@ def target_text(db, row, terms=()):
     the most query-term overlap -- NOT the first, which used to make every
     tier-2 excerpt print the episode intro and look like a vocabulary problem
     that was not there."""
-    if row["tier"] == "episode":
+    if row["tier"] in ("episode", "title"):
+        # Both are EPISODE-level targets: any chunk from the right episode
+        # counts. Tier 3 is the episode title, used only where the publisher
+        # gave nothing better.
         rows = [r[0] for r in db.execute(
             "SELECT body FROM chunks WHERE show = ? AND stem = ?",
             (row["show"], row["stem"])).fetchall()]
@@ -492,7 +495,7 @@ def evaluate(db, eval_rows, ks, use_stopwords=False, min_len=2,
             # false positive would silently inflate recall.
             if show != row["show"] or stem != row["stem"]:
                 continue
-            if tier == "episode":
+            if tier in ("episode", "title"):
                 rank = i
                 break
             t = row["t_seconds"]
@@ -744,6 +747,8 @@ def main():
     print()
     print("best by recall@5:", json.dumps(best["config"]))
     print("  per tier: ", json.dumps(best["scores"]["recall"][5]))
+    print("    tiers: chunk = timestamped Best Moment (tightest), "
+          "episode = discussion bullet, title = episode title (loosest)")
     print("  per show: ", json.dumps(best["scores"]["by_show"]))
     print("  chunks:   ", json.dumps(best["chunks_per_show"]))
     print("  by year:  ", json.dumps(best["scores"]["by_year"]))
