@@ -87,7 +87,7 @@ FULL="${FULL:-0}"
 # next one is skipped. That is why the number only has to be roughly right.
 # Episode length varies by show; re-check against the observed rate before
 # pushing it much higher.
-BATCH="${BATCH:-35}"
+BATCH="${BATCH:-25}"
 LOCK="${LOCK:-/tmp/scriberr-feed.lock}"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
