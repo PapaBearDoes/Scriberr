@@ -68,12 +68,15 @@
 #   consistent, but an unusual episode -- crosstalk, a long ad break, music --
 #   could in principle produce far more. Watch it; do not pre-solve it.
 #
-#   NOT YET DONE: the 1,360 episodes already transcribed under Sortformer keep
-#   their old labels until a deliberate re-run (~28 GPU h). MarTech therefore
-#   has two diarizers across one corpus by date. This does NOT affect retrieval
-#   -- BM25 indexes text and the reranker scores text, and segment counts were
-#   identical -- only the readability of the .txt copies and any future
-#   speaker-to-guest-name mapping.
+#   NOT YET DONE -- BOTH SHOWS ARE NOW MIXED BY DATE. Episodes already
+#   transcribed under Sortformer keep their old labels until a deliberate
+#   re-run: MarTech ~1,360 (~28 GPU h) and DoThisNotThat 636 (~14 GPU h).
+#   Everything transcribed from 2026-08-19 onward is pyannote.
+#   This does NOT affect retrieval -- BM25 indexes text and the reranker scores
+#   text, and segment counts were identical across diarizers -- only the
+#   readability of the .txt copies and any future speaker-to-guest-name
+#   mapping. A re-run means truncating the show's ledger, deleting its exported
+#   transcripts, and letting the hourly timer redo it.
 #
 #slug	feed	audio_dir	archive	ledger	outdir	profile_id	ytflags
 dtnt	https://feeds.captivate.fm/do-this-not-that/	/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat	/storage/nas/ai/scriberr/podcasts/.archive-dtnt.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
