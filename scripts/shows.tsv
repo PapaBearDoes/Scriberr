@@ -52,6 +52,29 @@
 #   than a two-host show. This column is why the CLI watcher was rejected --
 #   it applies one server-wide default profile to everything it uploads.
 #
+# MARTECH MOVED TO PYANNOTE 2026-08-19, MEASURED NOT ASSUMED.
+#   Sortformer reported exactly 4 speakers on all 1,150 episodes -- the cap.
+#   Twelve episodes re-transcribed under both diarizers, identical in every
+#   other parameter:
+#       speakers   4 -> 6 on 12/12      top2 share  92.9% -> 92.1% (HOLDS)
+#       nulls   0.4% -> 0.0%            segments    244 -> 244 (Parakeet same)
+#   top2 holding while the count rises means it separated REAL voices rather
+#   than fragmenting one person. On 2023-01-04 Sortformer's 220.1s and 208.7s
+#   speakers summed to pyannote's single 373.8s guest -- IT WAS SPLITTING ONE
+#   PERSON IN TWO. pyannote was also FASTER (90-150s vs 90-1351s) on an idle
+#   GPU, so there is no trade-off to weigh.
+#
+#   `max_speakers` is null (unbounded) on that profile. Six on all twelve is
+#   consistent, but an unusual episode -- crosstalk, a long ad break, music --
+#   could in principle produce far more. Watch it; do not pre-solve it.
+#
+#   NOT YET DONE: the 1,360 episodes already transcribed under Sortformer keep
+#   their old labels until a deliberate re-run (~28 GPU h). MarTech therefore
+#   has two diarizers across one corpus by date. This does NOT affect retrieval
+#   -- BM25 indexes text and the reranker scores text, and segment counts were
+#   identical -- only the readability of the .txt copies and any future
+#   speaker-to-guest-name mapping.
+#
 #slug	feed	audio_dir	archive	ledger	outdir	profile_id	ytflags
-dtnt	https://feeds.captivate.fm/do-this-not-that/	/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat	/storage/nas/ai/scriberr/podcasts/.archive-dtnt.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat	56483c7a-76f1-41ea-aa50-03afcf0fd781
-martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/audio/MarTech	/storage/nas/ai/scriberr/podcasts/.archive-martech.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-martech.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarTech	56483c7a-76f1-41ea-aa50-03afcf0fd781	--use-extractors generic
+dtnt	https://feeds.captivate.fm/do-this-not-that/	/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat	/storage/nas/ai/scriberr/podcasts/.archive-dtnt.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/audio/MarTech	/storage/nas/ai/scriberr/podcasts/.archive-martech.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-martech.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarTech	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce	--use-extractors generic
