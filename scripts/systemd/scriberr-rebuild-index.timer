@@ -1,0 +1,20 @@
+[Unit]
+Description=Rebuild the Scriberr search index daily
+
+[Timer]
+# 03:30, deliberately BEFORE the 05:00 Kopia off-site run on Lofn, so a fresh
+# index is captured the same night rather than waiting a day.
+#
+# Daily, not hourly. The index is queried interactively and by agents; the feed
+# adds one Do This NOT That episode a week outside a backfill. Hourly would
+# spend real work refreshing an index nobody read in between. During a backfill
+# it stays a day behind, which is the correct trade.
+OnCalendar=*-*-* 03:30:00
+
+# Hermes is on 24/7 but power blips restart it. Catch up one missed run after
+# boot rather than skipping a day.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

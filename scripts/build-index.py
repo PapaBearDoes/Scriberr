@@ -639,6 +639,9 @@ def main():
     ap.add_argument("--sweep-query", action="store_true", help="query-side grid")
     ap.add_argument("--dump-misses", nargs="?", const="AUTO", default=None)
     ap.add_argument("--query", help="search the built index and print results")
+    ap.add_argument("--build-only", action="store_true",
+                    help="build and write the index, then stop. Skips the eval "
+                         "set entirely -- a refresh needs the index, not a score.")
     ap.add_argument("--mode", default="moments", choices=["moments", "window"])
     ap.add_argument("--target-words", type=int, default=250)
     ap.add_argument("--max-words", type=int, default=400)
@@ -661,6 +664,29 @@ def main():
     if not episodes:
         sys.exit("ABORT: no episodes loaded")
 
+    base = {
+        "mode": args.mode, "target_words": args.target_words,
+        "max_words": args.max_words, "overlap": args.overlap,
+        "boiler_floor": args.boiler_floor, "boiler_fraction": args.boiler_fraction,
+        "index_header": args.index_header,
+        "stopwords": args.stopwords, "min_term_len": args.min_term_len,
+    }
+    # DEEP k SETTLES RANKING VERSUS RETRIEVAL, and unlike the false-miss proxy it
+    # is unbiased. A steep rise from R@10 to R@50 means BM25 is FINDING the right
+    # chunks and ordering them badly -- fix with a reranker over BM25 candidates,
+    # not a second retrieval system.
+    ks = [1, 3, 5, 10, 25, 50, 100]
+
+    if args.build_only:
+        # Deliberately BEFORE the eval set is even looked for. The eval set is a
+        # measurement instrument; an automated refresh needs the index and
+        # nothing else, and scoring costs minutes of query time on every run.
+        res, _ = run_config(episodes, [], base, ks, index_path=args.index)
+        print(f"{res['n_chunks']} chunks from {len(episodes)} episodes, "
+              + ", ".join(f"{s} {n}" for s, n in sorted(res["chunks_per_show"].items())))
+        print(f"wrote {args.index}")
+        return
+
     eval_path = os.path.join(args.analysis, "eval-candidates.jsonl")
     if not os.path.exists(eval_path):
         sys.exit(f"ABORT: no eval set at {eval_path} -- run measure-corpus.py first")
@@ -679,19 +705,6 @@ def main():
         step = len(eval_rows) / args.eval_sample     # deterministic, spread across shows
         eval_rows = [eval_rows[int(i * step)] for i in range(args.eval_sample)]
     print(f"  {len(eval_rows)} eval queries", file=sys.stderr)
-
-    base = {
-        "mode": args.mode, "target_words": args.target_words,
-        "max_words": args.max_words, "overlap": args.overlap,
-        "boiler_floor": args.boiler_floor, "boiler_fraction": args.boiler_fraction,
-        "index_header": args.index_header,
-        "stopwords": args.stopwords, "min_term_len": args.min_term_len,
-    }
-    # DEEP k SETTLES RANKING VERSUS RETRIEVAL, and unlike the false-miss proxy it
-    # is unbiased. A steep rise from R@10 to R@50 means BM25 is FINDING the right
-    # chunks and ordering them badly -- fix with a reranker over BM25 candidates,
-    # not a second retrieval system.
-    ks = [1, 3, 5, 10, 25, 50, 100]
 
     if args.query:
         run_config(episodes, [], base, ks, index_path=args.index)

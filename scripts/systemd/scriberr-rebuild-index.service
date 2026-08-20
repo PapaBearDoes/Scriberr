@@ -1,0 +1,25 @@
+[Unit]
+Description=Rebuild the Scriberr FTS5 search index when the corpus has changed
+Documentation=https://github.com/PapaBearDoes/Scriberr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Same user and token caveat as scriberr-feed.service: confirm with `id -un`.
+User=hermes
+ExecStart=/home/hermes/scriberr/scripts/rebuild-index.sh
+
+# No EnvironmentFile. This talks to NOTHING but the filesystem -- no Scriberr
+# API, no API key. That is deliberate: an index refresh should not depend on the
+# container being up.
+
+# Bounded, unlike the feed. A rebuild reads ~2k transcripts and writes one
+# SQLite file; it has no legitimate reason to run for an hour, so a timeout here
+# catches a hang rather than masking one. The atomic rename means a killed run
+# leaves the existing index untouched.
+RuntimeMaxSec=30min
+
+Nice=10
+IOSchedulingClass=idle
