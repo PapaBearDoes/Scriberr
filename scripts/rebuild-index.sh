@@ -111,4 +111,6 @@ fi
 
 mv -f "$INDEX.new" "$INDEX" || die "could not publish $INDEX.new"
 printf '%s\n' "$now" > "$STAMP"
-log "published $INDEX  ($(du -h "$INDEX" | cut -f1))"
+# stat, not `du -h`: on this NFS mount du reports raw blocks with no unit, so a
+# 40 MB index printed as a bare "512" -- which reads as alarming at 03:30.
+log "published $INDEX  ($(( $(stat -c %s "$INDEX") / 1048576 )) MB, $count episodes)"
