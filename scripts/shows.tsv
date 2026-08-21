@@ -80,4 +80,19 @@
 #
 #slug	feed	audio_dir	archive	ledger	outdir	profile_id	ytflags
 dtnt	https://feeds.captivate.fm/do-this-not-that/	/storage/nas/ai/scriberr/podcasts/audio/DoThisNotThat	/storage/nas/ai/scriberr/podcasts/.archive-dtnt.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-dtnt.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/DoThisNotThat	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+
 martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/audio/MarTech	/storage/nas/ai/scriberr/podcasts/.archive-martech.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-martech.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarTech	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce	--use-extractors generic
+
+#marketingschool	https://feeds.megaphone.fm/ESHO5419936864	/storage/nas/ai/scriberr/podcasts/audio/MarketingSchool	/storage/nas/ai/scriberr/podcasts/.archive-marketingschool.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-marketingschool.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarketingSchool	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+
+#onlinemarketingmadeeasy	https://feeds.megaphone.fm/APLL4654023510	/storage/nas/ai/scriberr/podcasts/audio/OnlineMarketingMadeEasy	/storage/nas/ai/scriberr/podcasts/.archive-onlinemarketingmadeeasy.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-onlinemarketingmadeeasy.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/OnlineMarketingMadeEasy	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+
+#amyporterfield	https://feeds.megaphone.fm/YAP3268529120	/storage/nas/ai/scriberr/podcasts/audio/AmyPorterfield	/storage/nas/ai/scriberr/podcasts/.archive-amyporterfield.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-amyporterfield.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/AmyPorterfield	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+
+#millenialmarketing	https://anchor.fm/s/37654af0/podcast/rss	/storage/nas/ai/scriberr/podcasts/audio/MillenialMarketing	/storage/nas/ai/scriberr/podcasts/.archive-millenialmarketing.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-millenialmarketing.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MillenialMarketing
+
+#whytheyresonate	https://feeds.transistor.fm/how-stories-happen	/storage/nas/ai/scriberr/podcasts/audio/WhyTheyResonate	/storage/nas/ai/scriberr/podcasts/.archive-whytheyresonate.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-whytheyresonate.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/WhyTheyResonate
+
+#unthinkable	https://feeds.simplecast.com/EQoA27zn	/storage/nas/ai/scriberr/podcasts/audio/Unthinkable	/storage/nas/ai/scriberr/podcasts/.archive-unthinkable.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-unthinkable.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/Unthinkable
+
+perpetualtraffic	https://feeds.captivate.fm/perpetual-traffic/	/storage/nas/ai/scriberr/podcasts/audio/PerpetualTraffic	/storage/nas/ai/scriberr/podcasts/.archive-perpetualtraffic.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-perpetualtraffic.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/PerpetualTraffic
