@@ -1,0 +1,45 @@
+[Unit]
+Description=Scriberr rerank sidecar -- HTTP search over the podcast corpus
+Documentation=https://github.com/PapaBearDoes/Scriberr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Confirm with `id -un`, same caveat as the other units.
+User=hermes
+WorkingDirectory=/home/hermes/scriberr
+
+# THE VENV INTERPRETER, not system python3. torch and sentence-transformers are
+# deliberately not installed system-wide -- measure-corpus.py, build-index.py
+# and search-corpus.py are stdlib-only on purpose and that stays true.
+ExecStart=/home/hermes/venvs/rerank/bin/python \
+    /home/hermes/scriberr/scripts/rerank-sidecar.py \
+    --index /home/hermes/.local/share/scriberr/chunks.sqlite \
+    --host 127.0.0.1 --port 8422 --keepwarm 12
+
+# 127.0.0.1 ONLY. WSL2 forwards localhost from Windows, so the MCP server on the
+# host reaches this without exposing an unauthenticated search endpoint to the
+# LAN. If that forwarding ever stops working, fix it with a Windows-side proxy
+# rather than by binding 0.0.0.0 here.
+
+# NOT Restart=always. A crash loop reloading 2.3 GB of model every few seconds
+# would thrash the GPU and hide the cause. Back off, and give up after a few
+# tries so `systemctl --failed` shows something rather than churning forever.
+Restart=on-failure
+RestartSec=30
+StartLimitBurst=4
+StartLimitIntervalSec=600
+
+# The model needs to load before this counts as started; measured 4-9 seconds
+# cold, plus a warm-up inference.
+TimeoutStartSec=180
+
+# Reads the LOCAL index. Deliberately no dependency on /storage/nas: the whole
+# point of the local copy is that queries do not touch NFS, so a NAS outage
+# should not take search down. The index simply goes stale until the nightly
+# rebuild can reach the NAS again.
+
+[Install]
+WantedBy=default.target
