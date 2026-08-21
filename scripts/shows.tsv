@@ -85,7 +85,7 @@ martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/
 
 #marketingschool	https://feeds.megaphone.fm/ESHO5419936864	/storage/nas/ai/scriberr/podcasts/audio/MarketingSchool	/storage/nas/ai/scriberr/podcasts/.archive-marketingschool.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-marketingschool.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/MarketingSchool	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
 
-#onlinemarketingmadeeasy	https://feeds.megaphone.fm/APLL4654023510	/storage/nas/ai/scriberr/podcasts/audio/OnlineMarketingMadeEasy	/storage/nas/ai/scriberr/podcasts/.archive-onlinemarketingmadeeasy.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-onlinemarketingmadeeasy.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/OnlineMarketingMadeEasy	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
+onlinemarketingmadeeasy	https://feeds.megaphone.fm/APLL4654023510	/storage/nas/ai/scriberr/podcasts/audio/OnlineMarketingMadeEasy	/storage/nas/ai/scriberr/podcasts/.archive-onlinemarketingmadeeasy.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-onlinemarketingmadeeasy.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/OnlineMarketingMadeEasy	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
 
 #amyporterfield	https://feeds.megaphone.fm/YAP3268529120	/storage/nas/ai/scriberr/podcasts/audio/AmyPorterfield	/storage/nas/ai/scriberr/podcasts/.archive-amyporterfield.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-amyporterfield.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/AmyPorterfield	c4b4bf58-41a7-4a1e-a606-f962fb78d2ce
 
@@ -95,4 +95,4 @@ martech	https://rss.art19.com/martech-podcast	/storage/nas/ai/scriberr/podcasts/
 
 #unthinkable	https://feeds.simplecast.com/EQoA27zn	/storage/nas/ai/scriberr/podcasts/audio/Unthinkable	/storage/nas/ai/scriberr/podcasts/.archive-unthinkable.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-unthinkable.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/Unthinkable
 
-perpetualtraffic	https://feeds.captivate.fm/perpetual-traffic/	/storage/nas/ai/scriberr/podcasts/audio/PerpetualTraffic	/storage/nas/ai/scriberr/podcasts/.archive-perpetualtraffic.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-perpetualtraffic.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/PerpetualTraffic
+#perpetualtraffic	https://feeds.captivate.fm/perpetual-traffic/	/storage/nas/ai/scriberr/podcasts/audio/PerpetualTraffic	/storage/nas/ai/scriberr/podcasts/.archive-perpetualtraffic.txt	/storage/nas/ai/scriberr/podcasts/.transcribed-perpetualtraffic.tsv	/storage/nas/ai/scriberr/podcasts/transcripts/PerpetualTraffic
