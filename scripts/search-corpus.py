@@ -52,7 +52,12 @@ import re
 import sqlite3
 import sys
 
-DEFAULT_INDEX = "/storage/nas/ai/scriberr/index/chunks.sqlite"
+DEFAULT_INDEX = os.path.expanduser("~/.local/share/scriberr/chunks.sqlite")
+# The NAS copy is the fallback: durable, backed up, and readable from anywhere.
+# The local copy is the hot path -- measured 21 Aug on the same 31,434-chunk
+# index, BM25 fetch p50 was 45 ms local against 286 ms over NFS, because FTS5
+# does many small reads and NFS punishes that. rebuild-index.sh publishes both.
+FALLBACK_INDEX = "/storage/nas/ai/scriberr/index/chunks.sqlite"
 DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 
@@ -155,8 +160,16 @@ def main():
         return
 
     if not os.path.exists(args.index):
-        sys.exit(f"ABORT: no index at {args.index}\n"
-                 f"       build it with: python3 scripts/build-index.py")
+        # Fall back to the NAS copy rather than failing: the local one is an
+        # optimisation, and a machine that has never run rebuild-index.sh should
+        # still be able to search.
+        if args.index == DEFAULT_INDEX and os.path.exists(FALLBACK_INDEX):
+            print(f"note: no local index, using {FALLBACK_INDEX} (slower)",
+                  file=sys.stderr)
+            args.index = FALLBACK_INDEX
+        else:
+            sys.exit(f"ABORT: no index at {args.index}\n"
+                     f"       build it with: python3 scripts/build-index.py")
 
     if args.shows:
         db = sqlite3.connect(f"file:{args.index}?mode=ro", uri=True)
