@@ -11,6 +11,17 @@ Type=oneshot
 User=hermes
 ExecStart=/home/hermes/scriberr/scripts/rebuild-index.sh
 
+# EXPLICIT, not inherited from $HOME. The script defaults LOCAL_INDEX to
+# ~/.local/share/scriberr/chunks.sqlite, which resolves via whatever User= is
+# set above -- so changing the user would silently move the file the rerank
+# sidecar reads, and the sidecar would go on serving a stale copy at the old
+# path. Naming it here makes that coupling visible.
+#
+# The local copy is the HOT PATH: measured 21 Aug, BM25 fetch p50 45 ms local
+# against 286 ms over NFS on the same index. The NAS copy remains the durable
+# one, the Kopia backup, and the fallback for anything reading over SMB.
+Environment=LOCAL_INDEX=/home/hermes/.local/share/scriberr/chunks.sqlite
+
 # No EnvironmentFile. This talks to NOTHING but the filesystem -- no Scriberr
 # API, no API key. That is deliberate: an index refresh should not depend on the
 # container being up.
