@@ -30,14 +30,20 @@ REGISTER IT (claude_desktop_config.json):
     "scriberr": {
       "command": "wsl.exe",
       "args": ["-d", "Debian", "-e",
-               "/home/hermes/venvs/rerank/bin/python",
+               "/home/hermes/venvs/mcp/bin/python",
                "/home/hermes/scriberr/scripts/scriberr-mcp.py"]
     }
 
 Confirm the distro name with `wsl -l -q` first.
 
-REQUIRES the `mcp` package in the venv:
-    ~/venvs/rerank/bin/pip install mcp
+REQUIRES the `mcp` package (2.0+):
+    python3 -m venv ~/venvs/mcp
+    ~/venvs/mcp/bin/pip install mcp
+
+Deliberately its OWN venv, not the rerank one. `mcp` 2.0 pulls in pydantic,
+cryptography, starlette and uvicorn -- about 23 packages. Sharing a venv with
+torch means a pydantic conflict between `mcp` and `sentence-transformers` takes
+down search and reranking together. This server imports nothing from torch.
 """
 
 import json
@@ -191,14 +197,33 @@ def render(payload, results, note=None):
 
 # ------------------------------------------------------------------- server
 
+# `mcp` 2.0.0 REPLACED FastMCP WITH MCPServer. Same ergonomics -- MCPServer(name),
+# @server.tool(), server.run() defaulting to stdio -- but the 1.x import path
+# `mcp.server.fastmcp` no longer exists. Verified against the installed package
+# on 21 Aug 2026 rather than guessed: `MCPServer.run(transport='stdio')` and
+# `.tool()` returning a decorator. `mcp.server.runner` is internal plumbing and
+# is not touched here.
+#
+# If this import fails after an upgrade, list the surface before rewriting:
+#     python -c "import mcp.server as s; print([n for n in dir(s) if n[0]!='_'])"
 try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError:
-    err("ABORT: the `mcp` package is not installed in this interpreter.\n"
-        "       ~/venvs/rerank/bin/pip install mcp")
+    from mcp.server import MCPServer
+except ImportError as exc:
+    err(f"ABORT: cannot import MCPServer from the `mcp` package ({exc}).\n"
+        "       ~/venvs/mcp/bin/pip install mcp\n"
+        "       If mcp is installed, its API has moved again -- see the note above.")
     sys.exit(1)
 
-mcp = FastMCP("scriberr")
+mcp = MCPServer(
+    "scriberr",
+    instructions=(
+        "Searches ~2,600 transcribed episodes of tactical marketing and martech "
+        "podcasts (2018-present) and returns verbatim, citable passages. Call "
+        "list_podcast_shows before using the `show` filter. Prefer `since` when "
+        "the question is about what currently works -- platform advice in this "
+        "corpus ages badly."
+    ),
+)
 
 
 @mcp.tool()
@@ -309,4 +334,4 @@ def list_podcast_shows() -> str:
 if __name__ == "__main__":
     err(f"scriberr-mcp: sidecar {SIDECAR}, index {index_path()}, "
         f"timeout {SIDECAR_TIMEOUT}s")
-    mcp.run()
+    mcp.run(transport="stdio")
