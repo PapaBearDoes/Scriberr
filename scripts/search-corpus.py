@@ -78,6 +78,10 @@ def rerank(rows, query, model_name, fp16):
               "  then run this script with ~/venvs/rerank/bin/python",
               file=sys.stderr)
         return rows
+    # Before touching the Hub: sentence-transformers checks for model updates on
+    # every load, and unauthenticated requests get the slow tier plus a warning.
+    import _hf_env
+    _hf_env.load()
     device = "cpu"
     kwargs = {}
     try:

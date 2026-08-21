@@ -118,6 +118,14 @@ def main():
         sys.exit("ABORT: sentence-transformers not installed.\n"
                  "       run this with ~/venvs/rerank/bin/python")
 
+    # Before touching the Hub: sentence-transformers checks for model updates on
+    # every load, and unauthenticated requests get the slow tier plus a warning.
+    # This is inside the timed section on purpose -- the Hub check is part of
+    # what a cold start actually costs.
+    import _hf_env
+    _hf_env.load()
+    print(f"  {_hf_env.describe()}", file=sys.stderr)
+
     device, kwargs = "cpu", {}
     try:
         import torch

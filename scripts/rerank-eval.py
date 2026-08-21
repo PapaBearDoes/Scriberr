@@ -87,6 +87,11 @@ def rank_of(row, cands):
 
 
 def load_model(name, device, max_length=512, fp16=False):
+    # Before touching the Hub: sentence-transformers checks for model updates on
+    # every load, and unauthenticated requests get the slow tier plus a warning.
+    import _hf_env
+    _hf_env.load()
+    print(f"  {_hf_env.describe()}", file=sys.stderr)
     try:
         from sentence_transformers import CrossEncoder
     except ImportError:
