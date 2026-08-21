@@ -25,21 +25,41 @@
 # whole new one, never a half-written file. This matters as soon as anything
 # queries the index on a schedule.
 #
+# TWO COPIES, AND THE LOCAL ONE IS THE HOT PATH.
+#   Measured 21 Aug on a 29,722-chunk / 135 MB index -- same machine, same query
+#   set, only the file location differing: BM25 fetch p50 **286 ms from the NFS
+#   copy against 39 ms from a local copy**, p95 496 ms -> 58 ms. SQLite FTS5 does
+#   many small reads and NFS punishes exactly that pattern. So the rerank sidecar
+#   reads a WSL-local copy; the NAS copy stays the durable one, the Kopia backup,
+#   and the fallback for anything reading over SMB.
+#
+#   THE STAMP IS WRITTEN ONLY IF BOTH PUBLISHES SUCCEED. Deliberate: a
+#   half-published rebuild must look UNCHANGED so the next run retries it. Were
+#   the stamp written after the local publish, a failed NAS copy would be
+#   recorded as done and the copies would silently diverge -- the exact
+#   silent-staleness failure this script exists to prevent.
+#
+#   Set LOCAL_INDEX= (empty) to publish only to the NAS.
+#
 # USAGE
 #     ./scripts/rebuild-index.sh              # rebuild only if changed
 #     ./scripts/rebuild-index.sh --force      # rebuild regardless
 #     ./scripts/rebuild-index.sh --dry-run    # report, change nothing
 #
 # ENV
-#     ROOT    default /storage/nas/ai/scriberr/podcasts
-#     INDEX   default /storage/nas/ai/scriberr/index/chunks.sqlite
-#     PYTHON  default python3
+#     ROOT         default /storage/nas/ai/scriberr/podcasts
+#     INDEX        default /storage/nas/ai/scriberr/index/chunks.sqlite
+#     LOCAL_INDEX  default ~/.local/share/scriberr/chunks.sqlite
+#     PYTHON       default python3
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-/storage/nas/ai/scriberr/podcasts}"
 INDEX="${INDEX:-/storage/nas/ai/scriberr/index/chunks.sqlite}"
+# The copy the rerank sidecar actually queries. Empty disables local publishing.
+# `${VAR-default}` not `${VAR:-default}` so LOCAL_INDEX= is respected as "off".
+LOCAL_INDEX="${LOCAL_INDEX-$HOME/.local/share/scriberr/chunks.sqlite}"
 PYTHON="${PYTHON:-python3}"
 STAMP="$INDEX.stamp"
 LOCK="${LOCK:-/tmp/scriberr-rebuild.lock}"
@@ -100,17 +120,46 @@ if [ "$now" = "$was" ] && [ "$FORCE" != "1" ]; then
 fi
 
 log "rebuilding ..."
-# --build-only skips the eval set and all scoring. 9>&- so the child does not
-# inherit the lock fd and hold it if it is ever orphaned.
-if ! "$PYTHON" "$HERE/build-index.py" --root "$ROOT" --index "$INDEX.new" \
-       --build-only 9>&-; then
-  die "build-index.py failed -- the existing index is untouched"
+
+# BUILD TO THE LOCAL PATH FIRST when there is one -- build-index.py writes a
+# SQLite file, and writing it locally then copying once beats writing it across
+# NFS. 9>&- so the child does not inherit the lock fd and hold it if orphaned.
+if [ -n "$LOCAL_INDEX" ]; then
+  mkdir -p "$(dirname "$LOCAL_INDEX")" || die "cannot create $(dirname "$LOCAL_INDEX")"
+  BUILD_TO="$LOCAL_INDEX.new"
+else
+  BUILD_TO="$INDEX.new"
 fi
 
-[ -s "$INDEX.new" ] || die "build produced an empty file -- existing index untouched"
+if ! "$PYTHON" "$HERE/build-index.py" --root "$ROOT" --index "$BUILD_TO" \
+       --build-only 9>&-; then
+  die "build-index.py failed -- existing indexes are untouched"
+fi
+[ -s "$BUILD_TO" ] || die "build produced an empty file -- existing indexes untouched"
+bytes=$(stat -c %s "$BUILD_TO")
 
-mv -f "$INDEX.new" "$INDEX" || die "could not publish $INDEX.new"
+if [ -n "$LOCAL_INDEX" ]; then
+  # Local first: it is the hot path, and rename(2) within a directory is atomic
+  # so a reader gets the whole old index or the whole new one, never a partial.
+  mv -f "$LOCAL_INDEX.new" "$LOCAL_INDEX" || die "could not publish $LOCAL_INDEX"
+  log "published $LOCAL_INDEX  ($(( bytes / 1048576 )) MB)"
+
+  # Then the NAS. A failure here is FATAL AND THE STAMP IS NOT WRITTEN, so the
+  # next run rebuilds rather than recording a divergence as done.
+  cp -f "$LOCAL_INDEX" "$INDEX.new" \
+    || die "could not stage $INDEX.new -- local is current, NAS is STALE, stamp not written"
+  nas_bytes=$(stat -c %s "$INDEX.new" 2>/dev/null || echo 0)
+  [ "$nas_bytes" = "$bytes" ] \
+    || die "NAS copy is $nas_bytes bytes against $bytes locally -- refusing to publish a truncated index"
+  mv -f "$INDEX.new" "$INDEX" \
+    || die "could not publish $INDEX -- local is current, NAS is STALE, stamp not written"
+else
+  mv -f "$INDEX.new" "$INDEX" || die "could not publish $INDEX"
+fi
+
+# Written LAST, and only once EVERY copy is in place. A half-published rebuild
+# must look UNCHANGED so the next run retries it.
 printf '%s\n' "$now" > "$STAMP"
 # stat, not `du -h`: on this NFS mount du reports raw blocks with no unit, so a
 # 40 MB index printed as a bare "512" -- which reads as alarming at 03:30.
-log "published $INDEX  ($(( $(stat -c %s "$INDEX") / 1048576 )) MB, $count episodes)"
+log "published $INDEX  ($(( bytes / 1048576 )) MB, $count episodes)"
