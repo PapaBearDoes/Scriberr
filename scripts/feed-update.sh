@@ -147,9 +147,35 @@ mountpoint -q /storage/nas || die "/storage/nas is not mounted (is Lofn up? is t
 # Is Scriberr actually up? On this host dockerd does not run until WSL is
 # launched, so "down" is a normal state and needs to read as a clear failure
 # rather than a quiet no-op. Exit non-zero so the journal records it.
-if ! curl -sf -o /dev/null --max-time 10 "$BASE/api/v1/profiles/" -H "X-API-Key: $APIKEY"; then
-  die "Scriberr is not answering at $BASE (is dockerd up? is the API key current?)"
-fi
+#
+# BUT WAIT FOR IT FIRST -- added 2026-09-02. The Task Scheduler entry that
+# starts this host's WSL distro at logon starts DOCKERD, not the Scriberr
+# CONTAINER, and Scriberr takes minutes to become ready. Persistent=true then
+# fires a catch-up run the instant systemd comes up, so EVERY Windows boot
+# produced an immediate ABORT and left the service `failed` for up to an hour.
+#
+#   Observed 2026-09-02: systemd up 06:05, abort at 06:05:42, container
+#   answering by ~06:10, 07:01 tick green end to end.
+#
+# Self-healing, so this was never data loss -- but a `failed` state that shows
+# up after every boot is one you stop reading, and `systemctl --failed` is
+# currently the ONLY thing watching this feed.
+#
+# 10 minutes covers the 8 min 15 s cold start measured on 14 Aug 2026. This
+# does NOT weaken the down-is-a-failure rule: a genuinely stopped Scriberr
+# still aborts non-zero, just ten minutes later. Overrunning the hour is safe --
+# this is a oneshot and systemd will not start a second instance.
+ready=0
+for attempt in $(seq 1 30); do
+  if curl -sf -o /dev/null --max-time 10 "$BASE/api/v1/profiles/" -H "X-API-Key: $APIKEY"; then
+    ready=1
+    [ "$attempt" -eq 1 ] || log "Scriberr answered after ~$(( (attempt - 1) * 20 ))s"
+    break
+  fi
+  [ "$attempt" -eq 1 ] && log "Scriberr not answering at $BASE yet -- waiting up to 10m"
+  sleep 20
+done
+[ "$ready" -eq 1 ] || die "Scriberr is not answering at $BASE after 10m (is dockerd up? is the API key current?)"
 
 log "feed-update starting  ($BASE)"
 
